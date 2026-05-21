@@ -4,7 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'firebase_options.dart';
-import 'package:firebase_dynamic_links/firebase_dynamic_links.dart';
+// TEMP: Disabled firebase_dynamic_links for iOS build compatibility
+// import 'package:firebase_dynamic_links/firebase_dynamic_links.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
@@ -82,7 +83,8 @@ class _MyAppState extends State<MyApp> {
 
         // Now initialize messaging and notification handlers
         _messagingController.init(onForegroundMessage: _showForegroundBanner);
-        _initDynamicLinks();
+        // TEMP: Disabled firebase_dynamic_links for iOS build compatibility
+        // _initDynamicLinks();
         _initNotificationTapHandler();
 
         String targetRoute = '/intro';
@@ -692,6 +694,8 @@ class _MyAppState extends State<MyApp> {
 
   Future<void> _initDynamicLinks() async {
     // لما التطبيق شغال (Foreground)
+    // TEMP: Disabled firebase_dynamic_links for iOS build compatibility
+    /*
     FirebaseDynamicLinks.instance.onLink
         .listen((PendingDynamicLinkData data) {
           final Uri link = data.link;
@@ -708,6 +712,7 @@ class _MyAppState extends State<MyApp> {
     if (data != null) {
       _handleResetLink(data.link);
     }
+    */
   }
 
   void _handleResetLink(Uri link) {

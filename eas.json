@@ -1,0 +1,27 @@
+{
+  "cli": {
+    "version": ">= 5.0.0"
+  },
+  "build": {
+    "preview": {
+      "ios": {
+        "resourceClass": "default"
+      }
+    },
+    "preview2": {
+      "ios": {
+        "resourceClass": "default"
+      }
+    },
+    "preview3": {
+      "ios": {
+        "resourceClass": "default"
+      }
+    },
+    "production": {
+      "ios": {
+        "resourceClass": "default"
+      }
+    }
+  }
+}
