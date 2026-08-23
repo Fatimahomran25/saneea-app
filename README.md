@@ -203,7 +203,7 @@ flutter run --dart-define=MOYASAR_PUBLISHABLE_KEY=pk_test_xxxxxxxxxxxx
 
 ## 🔄 CI/CD & Deployment
 
-There is currently **no automated CI/CD pipeline** configured in this repository (no `.github/workflows/`) — builds and deploys are run manually. Adding one is tracked in the [Roadmap](#-roadmap--future-enhancements) below.
+There is currently **no automated CI/CD pipeline** configured in this repository (no `.github/workflows/`) — builds and deploys are run manually.
 
 **Manual build commands:**
 ```bash
@@ -224,19 +224,6 @@ firebase deploy --only functions
 ```
 
 **Backend API** is a standard Flask app — deployable to any Python-capable host (Cloud Run, a VM, etc.); it is not currently containerized (no `Dockerfile` yet).
-
----
-
-## 🗺️ Roadmap & Future Enhancements
-
-**Current status: active development / pre-production MVP** — core flows (auth, requests, AI contracts, milestone payments, chat, admin moderation) are implemented and functionally tested; not yet hardened for a public production launch.
-
-- [ ] Re-enable the CLIP-based AI portfolio-matching pipeline in `/analyze` (currently returns a placeholder score)
-- [ ] Add automated CI (lint + `flutter analyze` + backend tests on every PR)
-- [ ] Containerize the Flask backend (`Dockerfile` + deploy workflow)
-- [ ] Formal test coverage for milestone payment order-enforcement and the admin moderation flows
-- [ ] Rate limiting / abuse protection on public backend endpoints
-- [ ] Expand supported service categories beyond the current five
 
 ---
 
