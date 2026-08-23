@@ -16,6 +16,17 @@ app = Flask(__name__)
 app.register_blueprint(contract_routes)
 
 
+@app.after_request
+def add_cors_headers(response):
+    # يسمح لتطبيق الويب (Flutter web على localhost) يتواصل مع هذا
+    # السيرفر — بدونه المتصفح يرفض الطلب بصمت بسبب سياسة CORS حتى لو
+    # السيرفر رد فعلياً.
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    return response
+
+
 # =========================
 # Temporary analyze endpoint
 # Shows freelancers while AI model is disabled
@@ -182,4 +193,9 @@ def analyze():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5001, debug=True)
+    # threaded=True matters here: Flask's dev server handles one request at
+    # a time by default, so with two test accounts hitting the backend
+    # around the same moment, a slow request could hold up an unrelated one
+    # until it hit the client's 25s timeout ("Check your internet or
+    # server") even though nothing was actually wrong.
+    app.run(host="0.0.0.0", port=5001, debug=True, threaded=True)

@@ -67,6 +67,36 @@ def build_contract_data(request):
     }
 
 
+def _render_payment_schedule_section(contract_data):
+    """Renders a "2b. Payment Schedule" section listing each milestone's
+    amount/percentage/trigger/status. Returns "" for contracts generated
+    before the milestone schema shipped (no milestones array), so the
+    contract text falls back to the plain single lump-sum wording above."""
+    milestones = contract_data.get("milestones") or []
+    if not isinstance(milestones, list) or not milestones:
+        return ""
+
+    currency = contract_data.get("payment", {}).get("currency") or ""
+    lines = []
+    for position, milestone in enumerate(milestones):
+        if not isinstance(milestone, dict):
+            continue
+        label = milestone.get("label") or f"Milestone {position + 1}"
+        amount = milestone.get("amount", "")
+        percentage = milestone.get("percentage", "")
+        trigger = str(milestone.get("trigger", "")).replace("_", " ").strip()
+        status = milestone.get("status", "")
+        lines.append(
+            f"- {label}: {amount} {currency} ({percentage}%) — due {trigger}, "
+            f"status: {status}"
+        )
+
+    if not lines:
+        return ""
+
+    return "\n\n2b. Payment Schedule\n" + "\n".join(lines)
+
+
 def render_contract_text(contract_data):
     return f"""
 CONTRACT AGREEMENT
@@ -87,6 +117,7 @@ The second party agrees to provide the following service:
 2. Payment
 The first party agrees to pay a total amount of:
 {contract_data["payment"]["amount"]} {contract_data["payment"]["currency"]}
+{_render_payment_schedule_section(contract_data)}
 
 3. Deadline
 The service must be completed before:

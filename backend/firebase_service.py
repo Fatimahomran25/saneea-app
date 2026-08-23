@@ -410,6 +410,34 @@ def delete_request_contract_data(request_id):
     })
 
 
+def delete_announcement_proposal_contract_data(proposal_id):
+    normalized_proposal_id = str(proposal_id or "").strip()
+    if not normalized_proposal_id:
+        raise ValueError(
+            "proposal_id is required to delete announcement proposal contract data"
+        )
+
+    db.collection("announcement_requests").document(normalized_proposal_id).update({
+        "contractData": firestore.DELETE_FIELD
+    })
+
+
+def delete_announcement_contract_data(client_id, announcement_id):
+    normalized_client_id = str(client_id or "").strip()
+    normalized_announcement_id = str(announcement_id or "").strip()
+
+    if not normalized_client_id or not normalized_announcement_id:
+        raise ValueError(
+            "client_id and announcement_id are required to delete announcement contract data"
+        )
+
+    db.collection("users").document(normalized_client_id).collection(
+        "announcements"
+    ).document(normalized_announcement_id).update({
+        "contractData": firestore.DELETE_FIELD
+    })
+
+
 def create_approved_contract_chat_message(
     request_id,
     request_data,

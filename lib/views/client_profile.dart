@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -84,7 +82,7 @@ class _ClientProfileBodyState extends State<_ClientProfileBody> {
       imageQuality: 90,
     );
     if (x == null) return;
-    c.setPickedImage(File(x.path));
+    c.setPickedImage(await x.readAsBytes());
   }
 
   @override
@@ -112,7 +110,7 @@ class _ClientProfileBodyState extends State<_ClientProfileBody> {
 
     ImageProvider? avatar;
     if (c.pickedImageFile != null) {
-      avatar = FileImage(c.pickedImageFile!);
+      avatar = MemoryImage(c.pickedImageFile!);
     } else if (p.photoUrl != null && p.photoUrl!.isNotEmpty) {
       avatar = NetworkImage(p.photoUrl!);
     }

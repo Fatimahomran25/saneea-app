@@ -1,9 +1,10 @@
-import 'dart:io';
 //تمت
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:saneea_app/views/client_profile.dart';
 
 import 'announcement_requests_view.dart';
@@ -36,7 +37,26 @@ class _ClientHomeScreenState extends State<ClientHomeScreen> {
   final RequestNotificationsController _notificationsController =
       RequestNotificationsController();
 
-  double _categoryScrollProgress = 0.0;
+  // Owns the horizontal category-row scroll indicator on its own so that
+  // scrolling the category chips doesn't setState() the whole screen —
+  // it used to, which tore down and recreated the Top Rated / Service
+  // Requests StreamBuilders below on every scroll frame (see the cached
+  // stream fields below for the other half of that fix).
+  final ValueNotifier<double> _categoryScrollProgress = ValueNotifier<double>(
+    0.0,
+  );
+
+  // Cached once instead of re-created on every build() — these used to be
+  // methods called inline from build(), which opened a brand new Firestore
+  // listener (and reset the StreamBuilder to its loading state) on every
+  // single rebuild, including the frequent rebuilds the category-row
+  // scroll listener used to trigger.
+  late final Stream<DocumentSnapshot<Map<String, dynamic>>>
+  _clientProfileStream = _buildClientProfileStream();
+  late final Stream<QuerySnapshot<Map<String, dynamic>>>
+  _myAnnouncementsStream = _buildMyAnnouncementsStream();
+  late final Stream<QuerySnapshot<Map<String, dynamic>>>
+  _allFreelancersStream = _buildAllFreelancersStream();
 
   final List<_CategoryModel> _categories = const [
     _CategoryModel(
@@ -70,6 +90,7 @@ class _ClientHomeScreenState extends State<ClientHomeScreen> {
   void dispose() {
     _searchController.dispose();
     _categoryScrollController.dispose();
+    _categoryScrollProgress.dispose();
     super.dispose();
   }
 
@@ -86,7 +107,7 @@ class _ClientHomeScreenState extends State<ClientHomeScreen> {
     return 0.0;
   }
 
-  Stream<DocumentSnapshot<Map<String, dynamic>>> _clientProfileStream() {
+  Stream<DocumentSnapshot<Map<String, dynamic>>> _buildClientProfileStream() {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return const Stream.empty();
 
@@ -96,7 +117,8 @@ class _ClientHomeScreenState extends State<ClientHomeScreen> {
         .snapshots();
   }
 
-  Stream<QuerySnapshot<Map<String, dynamic>>> _myAnnouncementsStream() {
+  Stream<QuerySnapshot<Map<String, dynamic>>>
+  _buildMyAnnouncementsStream() {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return const Stream.empty();
 
@@ -108,7 +130,7 @@ class _ClientHomeScreenState extends State<ClientHomeScreen> {
         .snapshots();
   }
 
-  Stream<QuerySnapshot<Map<String, dynamic>>> _allFreelancersStream() {
+  Stream<QuerySnapshot<Map<String, dynamic>>> _buildAllFreelancersStream() {
     return FirebaseFirestore.instance
         .collection('users')
         .where('accountType', isEqualTo: 'freelancer')
@@ -137,14 +159,18 @@ class _ClientHomeScreenState extends State<ClientHomeScreen> {
 
   Future<bool> _hasInternet() async {
     final result = await Connectivity().checkConnectivity();
-    if (result == ConnectivityResult.none) return false;
+    if (result.every((r) => r == ConnectivityResult.none)) return false;
+
+    // على الويب: navigator.onLine (اللي يعتمد عليه connectivity_plus)
+    // كافي، وأي طلب خارجي إضافي (زي gstatic) يرفضه المتصفح بسبب CORS
+    // حتى لو السيرفر رد فعلياً، فيرجع "لا يوجد اتصال" بشكل خاطئ.
+    if (kIsWeb) return true;
 
     try {
-      final lookup = await InternetAddress.lookup(
-        'example.com',
-      ).timeout(const Duration(seconds: 3));
-
-      return lookup.isNotEmpty && lookup.first.rawAddress.isNotEmpty;
+      final response = await http
+          .get(Uri.parse('https://www.gstatic.com/generate_204'))
+          .timeout(const Duration(seconds: 3));
+      return response.statusCode == 204 || response.statusCode == 200;
     } catch (_) {
       return false;
     }
@@ -292,8 +318,6 @@ class _ClientHomeScreenState extends State<ClientHomeScreen> {
     const double trackWidth = 140;
     const double indicatorWidth = 42;
 
-    final left = _categoryScrollProgress * (trackWidth - indicatorWidth);
-
     return SizedBox(
       width: trackWidth,
       height: 4,
@@ -307,16 +331,21 @@ class _ClientHomeScreenState extends State<ClientHomeScreen> {
               borderRadius: BorderRadius.circular(20),
             ),
           ),
-          Positioned(
-            left: left,
-            child: Container(
-              width: indicatorWidth,
-              height: 4,
-              decoration: BoxDecoration(
-                color: _primary,
-                borderRadius: BorderRadius.circular(20),
-              ),
-            ),
+          ValueListenableBuilder<double>(
+            valueListenable: _categoryScrollProgress,
+            builder: (context, progress, _) {
+              return Positioned(
+                left: progress * (trackWidth - indicatorWidth),
+                child: Container(
+                  width: indicatorWidth,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: _primary,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                ),
+              );
+            },
           ),
         ],
       ),
@@ -392,7 +421,7 @@ class _ClientHomeScreenState extends State<ClientHomeScreen> {
 
   Widget _buildProfileAvatar() {
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: _clientProfileStream(),
+      stream: _clientProfileStream,
       builder: (context, snapshot) {
         final data = snapshot.data?.data();
         final photoUrl = (data?['photoUrl'] ?? data?['profile'] ?? '')
@@ -423,7 +452,7 @@ class _ClientHomeScreenState extends State<ClientHomeScreen> {
 
   Widget _buildSearchResults() {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: _allFreelancersStream(),
+      stream: _allFreelancersStream,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
@@ -498,7 +527,7 @@ class _ClientHomeScreenState extends State<ClientHomeScreen> {
 
   Widget _buildTopRated() {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: _allFreelancersStream(),
+      stream: _allFreelancersStream,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
@@ -588,7 +617,7 @@ class _ClientHomeScreenState extends State<ClientHomeScreen> {
 
   Widget _buildMyServiceRequests({bool previewOnly = false}) {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: _myAnnouncementsStream(),
+      stream: _myAnnouncementsStream,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Padding(
@@ -753,7 +782,7 @@ class _ClientHomeScreenState extends State<ClientHomeScreen> {
                               StreamBuilder<
                                 DocumentSnapshot<Map<String, dynamic>>
                               >(
-                                stream: _clientProfileStream(),
+                                stream: _clientProfileStream,
                                 builder: (context, snapshot) {
                                   final data = snapshot.data?.data();
                                   final name = (data?['firstName'] ?? '')
@@ -846,12 +875,15 @@ class _ClientHomeScreenState extends State<ClientHomeScreen> {
                               final maxScroll =
                                   notification.metrics.maxScrollExtent;
 
-                              setState(() {
-                                _categoryScrollProgress = maxScroll > 0
-                                    ? (notification.metrics.pixels / maxScroll)
-                                          .clamp(0.0, 1.0)
-                                    : 0.0;
-                              });
+                              // ValueNotifier, not setState() — this fires on
+                              // every scroll frame, and setState() here used
+                              // to rebuild the entire screen (including the
+                              // Top Rated / Service Requests sections below)
+                              // on every one of those frames.
+                              _categoryScrollProgress.value = maxScroll > 0
+                                  ? (notification.metrics.pixels / maxScroll)
+                                        .clamp(0.0, 1.0)
+                                  : 0.0;
                             }
                             return false;
                           },
@@ -953,14 +985,18 @@ class AllServiceRequestsView extends StatelessWidget {
 
   Future<bool> _hasInternet() async {
     final result = await Connectivity().checkConnectivity();
-    if (result == ConnectivityResult.none) return false;
+    if (result.every((r) => r == ConnectivityResult.none)) return false;
+
+    // على الويب: navigator.onLine (اللي يعتمد عليه connectivity_plus)
+    // كافي، وأي طلب خارجي إضافي (زي gstatic) يرفضه المتصفح بسبب CORS
+    // حتى لو السيرفر رد فعلياً، فيرجع "لا يوجد اتصال" بشكل خاطئ.
+    if (kIsWeb) return true;
 
     try {
-      final lookup = await InternetAddress.lookup(
-        'example.com',
-      ).timeout(const Duration(seconds: 3));
-
-      return lookup.isNotEmpty && lookup.first.rawAddress.isNotEmpty;
+      final response = await http
+          .get(Uri.parse('https://www.gstatic.com/generate_204'))
+          .timeout(const Duration(seconds: 3));
+      return response.statusCode == 204 || response.statusCode == 200;
     } catch (_) {
       return false;
     }

@@ -6,7 +6,6 @@ import '../controlles/chat_controller.dart';
 import '../controlles/recommendation_controller.dart';
 import '../models/recommendation_model.dart';
 import 'chat_view.dart';
-import 'freelancer_home.dart';
 import 'chat_action_button.dart';
 
 class MyAnnouncementRequestsView extends StatefulWidget {

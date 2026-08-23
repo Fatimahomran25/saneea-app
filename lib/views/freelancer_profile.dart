@@ -1,14 +1,12 @@
-import 'dart:io';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:saneea_app/views/client_home_screen.dart';
-import '../views/anouncment_view.dart';
 import '../controlles/account_access_service.dart';
 import '../controlles/freelancer_profile_controller.dart';
 import '../models/freelancer_profile_model.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import '../controlles/recommendation_controller.dart';
 import 'request_action_button.dart';
 import 'favorite_heart_button.dart';
 import 'report_flag_button.dart';
@@ -40,6 +38,40 @@ class _FreelancerProfileViewState extends State<FreelancerProfileView> {
   static const Color kSoftBorder = Color(0x66B8A9D9);
 
   bool get _isOwnProfile => widget.userId == null;
+
+  // The header stars and the "Top rated" lists both read users/{uid}.rating
+  // directly, but the profile controller's `profile.rating` is a separate
+  // average computed from the reviews subcollection — they can disagree
+  // (e.g. a rating set without matching review docs). Favoriting used to
+  // snapshot the controller's value, so the favorites list could show a
+  // stale/different rating than what the profile itself just displayed.
+  // Fetching the same stored field once here keeps both in sync.
+  double? _viewedUserStoredRating;
+
+  Future<void> _loadViewedUserStoredRating() async {
+    final userId = widget.userId;
+    if (userId == null || userId.trim().isEmpty) return;
+
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .get();
+      final data = doc.data();
+      final rawRating = data?['rating'];
+      final rating = rawRating is num
+          ? rawRating.toDouble()
+          : double.tryParse(rawRating?.toString() ?? '') ?? 0.0;
+
+      if (!mounted) return;
+      setState(() {
+        _viewedUserStoredRating = rating;
+      });
+    } catch (_) {
+      // Keep whatever the header stars already fall back to; favoriting
+      // still works, just without the freshest rating snapshot.
+    }
+  }
 
   String _maskIban(String? iban) {
     final s = (iban ?? '').replaceAll(' ', '').toUpperCase();
@@ -84,6 +116,7 @@ class _FreelancerProfileViewState extends State<FreelancerProfileView> {
   void initState() {
     super.initState();
     c.init(userId: widget.userId);
+    _loadViewedUserStoredRating();
   }
 
   @override
@@ -101,7 +134,9 @@ class _FreelancerProfileViewState extends State<FreelancerProfileView> {
         imageQuality: 90,
       );
       if (x == null) return;
-      c.setPickedImage(File(x.path));
+      // نقرأ bytes مباشرة بدل تكوين dart:io File (غير مدعوم بالويب).
+      final bytes = await x.readAsBytes();
+      c.setPickedImage(bytes);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -114,7 +149,9 @@ class _FreelancerProfileViewState extends State<FreelancerProfileView> {
     if (!c.isEditing || !_isOwnProfile) return;
     final xs = await ImagePicker().pickMultiImage(imageQuality: 85);
     if (xs.isEmpty) return;
-    c.addPortfolioFiles(xs.map((e) => File(e.path)).toList());
+    // bytes بدل File عشان تشتغل بكل المنصات (بما فيها الويب).
+    final bytesList = await Future.wait(xs.map((e) => e.readAsBytes()));
+    c.addPortfolioFiles(bytesList);
   }
 
   Future<ExperienceModel?> _experienceDialog({ExperienceModel? initial}) async {
@@ -342,16 +379,22 @@ class _FreelancerProfileViewState extends State<FreelancerProfileView> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text(
+                          Text(
                             'Complete the required fields to make your profile visible:',
                             style: TextStyle(
                               fontSize: 13,
-                              fontWeight: FontWeight.w600,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.red.shade700,
                             ),
                           ),
                           const SizedBox(height: 8),
 
-                          ...c.missingRequiredFields.map((e) => Text('• $e')),
+                          ...c.missingRequiredFields.map(
+                            (e) => Text(
+                              '• $e',
+                              style: TextStyle(color: Colors.red.shade700),
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -508,131 +551,9 @@ class _FreelancerProfileViewState extends State<FreelancerProfileView> {
                   ),
                   const SizedBox(height: 16),
 
-                  Row(
-                    children: [
-                      Text(
-                        "Experience",
-                        style: TextStyle(
-                          color: Colors.grey.shade700,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const Spacer(),
-                      if (_isOwnProfile && c.isEditing)
-                        TextButton.icon(
-                          onPressed: () async {
-                            final res = await _experienceDialog();
-                            if (res == null) return;
-                            await c.addExperience(res);
-                            _showBlockedActionSnackBarIfNeeded();
-                          },
-                          icon: const Icon(Icons.add, size: 18),
-                          label: const Text("Add"),
-                          style: TextButton.styleFrom(foregroundColor: kPurple),
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-
-                  ...List.generate(c.profile!.experiences.length, (i) {
-                    final e = c.profile!.experiences[i];
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: _ExperienceCard(
-                        purple: kPurple,
-                        experience: e,
-                        editable: _isOwnProfile ? c.isEditing : false,
-                        onEdit: () async {
-                          final res = await _experienceDialog(initial: e);
-                          if (res == null) return;
-                          await c.editExperience(i, res);
-                          _showBlockedActionSnackBarIfNeeded();
-                        },
-                        onDelete: () async {
-                          await c.deleteExperience(i);
-                          _showBlockedActionSnackBarIfNeeded();
-                        },
-                      ),
-                    );
-                  }),
-
-                  const SizedBox(height: 14),
-
-                  _InnerBox(
-                    borderColor: kSoftBorder,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          "Rating",
-                          style: TextStyle(
-                            color: Colors.grey.shade700,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Row(
-                          children: [
-                            _StarsReadOnly(value: c.profile!.rating, size: 22),
-                            const SizedBox(width: 10),
-                            Text(
-                              c.profile!.rating.toStringAsFixed(1),
-                              style: TextStyle(
-                                color: Colors.grey.shade700,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-
-                  const SizedBox(height: 14),
-
-                  Text(
-                    "Reviews",
-                    style: TextStyle(
-                      color: Colors.grey.shade700,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-
-                  _InnerBox(
-                    borderColor: kSoftBorder,
-                    child: c.reviews.isEmpty
-                        ? Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 18),
-                            child: Center(
-                              child: Text(
-                                "No reviews yet.",
-                                style: TextStyle(
-                                  color: Colors.grey.shade600,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                          )
-                        : Column(
-                            children: c.reviews.map((r) {
-                              return Padding(
-                                padding: const EdgeInsets.only(bottom: 12),
-                                child: _ReviewFigmaTile(
-                                  name: r.reviewerName,
-                                  reviewerProfileUrl: r.reviewerProfileUrl,
-                                  rating: r.rating,
-                                  text: r.text,
-                                ),
-                              );
-                            }).toList(),
-                          ),
-                  ),
-
-                  const SizedBox(height: 14),
-
+                  // نقلنا Portfolio لهنا (جنب Service Type/Working Mode)
+                  // لأنه من الحقول المطلوبة لتفعيل ظهور البروفايل للعملاء،
+                  // فيكون ترتيب الحقول منطقي: كل المطلوب إكماله يجي أول.
                   _InnerBox(
                     borderColor: kSoftBorder,
                     child: Column(
@@ -735,7 +656,10 @@ class _FreelancerProfileViewState extends State<FreelancerProfileView> {
                                   children: [
                                     ClipRRect(
                                       borderRadius: BorderRadius.circular(12),
-                                      child: Image.file(f, fit: BoxFit.cover),
+                                      // Image.memory بدل Image.file: يشتغل
+                                      // على كل المنصات (Image.file غير
+                                      // مدعوم إطلاقاً بفلاتر ويب).
+                                      child: Image.memory(f, fit: BoxFit.cover),
                                     ),
                                     if (_isOwnProfile && c.isEditing)
                                       Positioned(
@@ -768,6 +692,131 @@ class _FreelancerProfileViewState extends State<FreelancerProfileView> {
                         ),
                       ],
                     ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  Row(
+                    children: [
+                      Text(
+                        "Experience",
+                        style: TextStyle(
+                          color: Colors.grey.shade700,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const Spacer(),
+                      if (_isOwnProfile && c.isEditing)
+                        TextButton.icon(
+                          onPressed: () async {
+                            final res = await _experienceDialog();
+                            if (res == null) return;
+                            await c.addExperience(res);
+                            _showBlockedActionSnackBarIfNeeded();
+                          },
+                          icon: const Icon(Icons.add, size: 18),
+                          label: const Text("Add"),
+                          style: TextButton.styleFrom(foregroundColor: kPurple),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+
+                  ...List.generate(c.profile!.experiences.length, (i) {
+                    final e = c.profile!.experiences[i];
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: _ExperienceCard(
+                        purple: kPurple,
+                        experience: e,
+                        editable: _isOwnProfile ? c.isEditing : false,
+                        onEdit: () async {
+                          final res = await _experienceDialog(initial: e);
+                          if (res == null) return;
+                          await c.editExperience(i, res);
+                          _showBlockedActionSnackBarIfNeeded();
+                        },
+                        onDelete: () async {
+                          await c.deleteExperience(i);
+                          _showBlockedActionSnackBarIfNeeded();
+                        },
+                      ),
+                    );
+                  }),
+
+                  const SizedBox(height: 14),
+
+                  // نفس نمط Reviews/Experience: التسمية فوق الصندوق
+                  // برّا، مو بالداخل.
+                  Text(
+                    "Rating",
+                    style: TextStyle(
+                      color: Colors.grey.shade700,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  _InnerBox(
+                    borderColor: kSoftBorder,
+                    // Wrap يخلي الصندوق بحجم محتواه بالضبط (مو ممدود
+                    // لعرض الشاشة كامل)، ولو ضاقت الشاشة يلف النص
+                    // تحت النجوم تلقائياً بدل ما يفيض (overflow).
+                    child: Wrap(
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      spacing: 10,
+                      children: [
+                        _StarsReadOnly(value: c.profile!.rating, size: 22),
+                        Text(
+                          c.profile!.rating.toStringAsFixed(1),
+                          style: TextStyle(
+                            color: Colors.grey.shade700,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 14),
+
+                  Text(
+                    "Reviews",
+                    style: TextStyle(
+                      color: Colors.grey.shade700,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+
+                  _InnerBox(
+                    borderColor: kSoftBorder,
+                    child: c.reviews.isEmpty
+                        ? Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 18),
+                            child: Center(
+                              child: Text(
+                                "No reviews yet.",
+                                style: TextStyle(
+                                  color: Colors.grey.shade600,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          )
+                        : Column(
+                            children: c.reviews.map((r) {
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: 12),
+                                child: _ReviewFigmaTile(
+                                  name: r.reviewerName,
+                                  reviewerProfileUrl: r.reviewerProfileUrl,
+                                  rating: r.rating,
+                                  text: r.text,
+                                ),
+                              );
+                            }).toList(),
+                          ),
                   ),
 
                   const SizedBox(height: 18),
@@ -907,26 +956,9 @@ class _FreelancerProfileViewState extends State<FreelancerProfileView> {
           const SizedBox(height: 10),
 
           Center(
-            child: FutureBuilder(
-              future: FirebaseFirestore.instance
-                  .collection('users')
-                  .doc(widget.userId)
-                  .get(),
-              builder: (context, snapshot) {
-                if (!snapshot.hasData) {
-                  return _StarsReadOnly(value: 0, size: 22);
-                }
-
-                final data = snapshot.data!.data() as Map<String, dynamic>;
-
-                final rating = (data['rating'] is int)
-                    ? (data['rating'] as int).toDouble()
-                    : (data['rating'] is double)
-                    ? data['rating']
-                    : double.tryParse(data['rating']?.toString() ?? '0') ?? 0.0;
-
-                return _StarsReadOnly(value: rating, size: 22);
-              },
+            child: _StarsReadOnly(
+              value: _viewedUserStoredRating ?? 0,
+              size: 22,
             ),
           ),
           const SizedBox(height: 24),
@@ -1156,7 +1188,7 @@ class _FreelancerProfileViewState extends State<FreelancerProfileView> {
                       favoriteUserRole: 'freelancer',
                       favoriteUserProfileImage: c.profile!.photoUrl ?? '',
                       serviceField: c.profile!.serviceField ?? '',
-                      rating: c.profile!.rating,
+                      rating: _viewedUserStoredRating ?? c.profile!.rating,
                       iconSize: 24,
                       padding: const EdgeInsets.all(10),
                       backgroundColor: const Color(0xFFF6F2FB),
@@ -1397,7 +1429,7 @@ class _HeaderLikeAdmin_NoJobTitle extends StatelessWidget {
   final Color headerBg;
   final bool isEditing;
   final FreelancerProfileModel profile;
-  final File? pickedImageFile;
+  final Uint8List? pickedImageFile;
   final VoidCallback onPickImage;
   final Future<void> Function() onDeleteImage;
   final TextEditingController firstNameCtrl;
@@ -1413,7 +1445,8 @@ class _HeaderLikeAdmin_NoJobTitle extends StatelessWidget {
   Widget build(BuildContext context) {
     ImageProvider? avatar;
     if (pickedImageFile != null) {
-      avatar = FileImage(pickedImageFile!);
+      // MemoryImage بدل FileImage: يشتغل بكل المنصات بما فيها الويب.
+      avatar = MemoryImage(pickedImageFile!);
     } else if (profile.photoUrl != null && profile.photoUrl!.isNotEmpty) {
       avatar = NetworkImage(profile.photoUrl!);
     }
@@ -1421,7 +1454,11 @@ class _HeaderLikeAdmin_NoJobTitle extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Container(
-        height: 235,
+        // بدل رقم ثابت (كان يفتح overflow جديد كل ما زاد المحتوى: رسالة
+        // خطأ، اسم أطول...)، نخليه يكبر تلقائياً حسب المحتوى الفعلي مع
+        // إبقاء حد أدنى للشكل بوضع العرض العادي.
+        constraints: const BoxConstraints(minHeight: 235),
+
         decoration: BoxDecoration(
           color: headerBg,
           borderRadius: BorderRadius.circular(18),
@@ -1433,9 +1470,24 @@ class _HeaderLikeAdmin_NoJobTitle extends StatelessWidget {
               Positioned(
                 top: 10,
                 right: 10,
-                child: IconButton(
-                  onPressed: onEditTap,
-                  icon: Icon(Icons.edit, color: purple, size: 20),
+                // دائرة بنفسجية فاتحة بظل حول أيقونة القلم بدل ما تكون
+                // طايرة بدون خلفية.
+                child: Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: purple.withOpacity(0.12),
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: purple.withOpacity(0.35),
+                      width: 1.2,
+                    ),
+                  ),
+                  child: IconButton(
+                    onPressed: onEditTap,
+                    padding: EdgeInsets.zero,
+                    icon: Icon(Icons.edit, color: purple, size: 20),
+                  ),
                 ),
               ),
             Align(
@@ -1534,53 +1586,81 @@ class _HeaderLikeAdmin_NoJobTitle extends StatelessWidget {
                         ),
                       )
                     else
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          SizedBox(
-                            width: 125,
-                            child: TextFormField(
-                              controller: firstNameCtrl,
-                              validator: firstNameValidator,
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                color: purple,
-                                fontSize: 18,
-                                fontWeight: FontWeight.w800,
-                              ),
-                              decoration: const InputDecoration(
-                                isDense: true,
-                                border: InputBorder.none,
-                                enabledBorder: InputBorder.none,
-                                focusedBorder: InputBorder.none,
-                                errorBorder: InputBorder.none,
-                                hintText: "First",
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          SizedBox(
-                            width: 125,
-                            child: TextFormField(
-                              controller: lastNameCtrl,
-                              validator: lastNameValidator,
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                color: purple,
-                                fontSize: 18,
-                                fontWeight: FontWeight.w800,
-                              ),
-                              decoration: const InputDecoration(
-                                isDense: true,
-                                border: InputBorder.none,
-                                enabledBorder: InputBorder.none,
-                                focusedBorder: InputBorder.none,
-                                errorBorder: InputBorder.none,
-                                hintText: "Last",
+                      // نفس قوانين حقول التطبيق (زي حقل National ID / Iqama
+                      // بشاشة التسجيل): تسمية فوق الحقل + صندوق مستقل بلون
+                      // فاتح وحواف مستديرة خفيفة، بدل صندوق واحد ملتصق.
+                      SizedBox(
+                        width: 280,
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: _EditableField(
+                                label: "First name",
+                                enabled: true,
+                                controller: firstNameCtrl,
+                                validator: firstNameValidator,
+                                purple: purple,
+                                maxLength: 20,
+                                counterText: "",
+                                errorMaxLines: 2,
+                                textCapitalization: TextCapitalization.words,
+                                inputFormatters: [
+                                  LengthLimitingTextInputFormatter(20),
+                                  TextInputFormatter.withFunction((
+                                    oldValue,
+                                    newValue,
+                                  ) {
+                                    final capitalized =
+                                        FreelancerProfileController.capitalizeWords(
+                                          newValue.text,
+                                        );
+                                    if (capitalized == newValue.text) {
+                                      return newValue;
+                                    }
+                                    return newValue.copyWith(
+                                      text: capitalized,
+                                      selection: newValue.selection,
+                                    );
+                                  }),
+                                ],
                               ),
                             ),
-                          ),
-                        ],
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: _EditableField(
+                                label: "Last name",
+                                enabled: true,
+                                controller: lastNameCtrl,
+                                validator: lastNameValidator,
+                                purple: purple,
+                                maxLength: 20,
+                                counterText: "",
+                                errorMaxLines: 2,
+                                textCapitalization: TextCapitalization.words,
+                                inputFormatters: [
+                                  LengthLimitingTextInputFormatter(20),
+                                  TextInputFormatter.withFunction((
+                                    oldValue,
+                                    newValue,
+                                  ) {
+                                    final capitalized =
+                                        FreelancerProfileController.capitalizeWords(
+                                          newValue.text,
+                                        );
+                                    if (capitalized == newValue.text) {
+                                      return newValue;
+                                    }
+                                    return newValue.copyWith(
+                                      text: capitalized,
+                                      selection: newValue.selection,
+                                    );
+                                  }),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
 
                     const SizedBox(height: 4),
@@ -1602,56 +1682,86 @@ class _HeaderLikeAdmin_NoJobTitle extends StatelessWidget {
                         ),
                       )
                     else
+                      // نفس عرض صف الاسم بالضبط (280) بدل صندوق أضيق
+                      // معلّق بالنص، عشان الشكل يطلع مستطيل منظم
+                      // مو متدرّج (مثلث).
                       SizedBox(
-                        width: 170,
-                        child: DropdownButtonFormField<String>(
-                          isExpanded: true,
-                          value:
-                              (profile.serviceField == null ||
-                                  profile.serviceField!.isEmpty)
-                              ? null
-                              : profile.serviceField,
-                          items: serviceFieldOptions.map((field) {
-                            return DropdownMenuItem<String>(
-                              value: field,
-                              child: Text(
-                                field,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(fontSize: 12),
-                              ),
-                            );
-                          }).toList(),
-                          onChanged: (value) {
-                            if (value != null) {
-                              onServiceFieldChanged(value);
-                            }
-                          },
-                          decoration: InputDecoration(
-                            hintText: "Select your job title *",
-                            isDense: true,
-                            filled: true,
-                            fillColor: Colors.white,
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 6,
-                            ),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              borderSide: BorderSide(
-                                color: purple.withOpacity(0.2),
+                        width: 280,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // تسمية واضحة فوق الحقل (بدل الاعتماد على
+                            // النص الشفاف بالداخل فقط)، بنفس قوانين
+                            // باقي حقول الشاشة.
+                            Text(
+                              "Job Title",
+                              style: TextStyle(
+                                color: Colors.grey.shade700,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
                               ),
                             ),
-                            enabledBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              borderSide: BorderSide(
-                                color: purple.withOpacity(0.2),
+                            const SizedBox(height: 6),
+                            DropdownButtonFormField<String>(
+                              isExpanded: true,
+                              value:
+                                  (profile.serviceField == null ||
+                                      profile.serviceField!.isEmpty)
+                                  ? null
+                                  : profile.serviceField,
+                              items: serviceFieldOptions.map((field) {
+                                return DropdownMenuItem<String>(
+                                  value: field,
+                                  // بدون فونت صريح: يرث نفس الخط الافتراضي
+                                  // اللي تستخدمه حقول Bio/Email عشان تكون
+                                  // كل الحقول موحّدة تماماً.
+                                  child: Text(
+                                    field,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                );
+                              }).toList(),
+                              onChanged: (value) {
+                                if (value != null) {
+                                  onServiceFieldChanged(value);
+                                }
+                              },
+                              decoration: InputDecoration(
+                                hintText: "Select",
+                                isDense: true,
+                                filled: true,
+                                fillColor: Colors.white,
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 10,
+                                ),
+                                // نفس نصف قطر وحد باقي الحقول (14 /
+                                // 0.25 شفافية) عشان تكون كل الحقول
+                                // موحّدة الشكل.
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(14),
+                                  borderSide: BorderSide(
+                                    color: purple.withOpacity(0.25),
+                                    width: 1.2,
+                                  ),
+                                ),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(14),
+                                  borderSide: BorderSide(
+                                    color: purple.withOpacity(0.25),
+                                    width: 1.2,
+                                  ),
+                                ),
+                                focusedBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(14),
+                                  borderSide: BorderSide(
+                                    color: purple,
+                                    width: 1.4,
+                                  ),
+                                ),
                               ),
                             ),
-                            focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              borderSide: BorderSide(color: purple, width: 1.2),
-                            ),
-                          ),
+                          ],
                         ),
                       ),
                   ],
@@ -1736,6 +1846,9 @@ class _EditableField extends StatelessWidget {
     this.keyboardType,
     this.counterText,
     this.hintText,
+    this.inputFormatters,
+    this.textCapitalization = TextCapitalization.none,
+    this.errorMaxLines,
   });
 
   final String label;
@@ -1748,6 +1861,9 @@ class _EditableField extends StatelessWidget {
   final TextInputType? keyboardType;
   final String? counterText;
   final String? hintText;
+  final List<TextInputFormatter>? inputFormatters;
+  final TextCapitalization textCapitalization;
+  final int? errorMaxLines;
 
   @override
   Widget build(BuildContext context) {
@@ -1775,10 +1891,13 @@ class _EditableField extends StatelessWidget {
           keyboardType: keyboardType,
           maxLength: maxLength,
           maxLines: maxLines,
+          inputFormatters: inputFormatters,
+          textCapitalization: textCapitalization,
           autovalidateMode: AutovalidateMode.onUserInteraction,
           decoration: InputDecoration(
             hintText: hintText,
             counterText: counterText ?? "",
+            errorMaxLines: errorMaxLines,
             filled: true,
             fillColor: Colors.white,
             isDense: true,

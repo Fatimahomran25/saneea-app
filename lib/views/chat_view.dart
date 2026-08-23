@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -19,11 +20,12 @@ import 'freelancer_profile.dart';
 import 'report_flag_button.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:moyasar/moyasar.dart';
+import '../widgets/web_moyasar_card_form.dart';
 
 class _DeliveryLocalFile {
-  const _DeliveryLocalFile({required this.file, required this.name});
+  const _DeliveryLocalFile({required this.bytes, required this.name});
 
-  final File file;
+  final Uint8List bytes;
   final String name;
 }
 
@@ -63,7 +65,7 @@ class _DeliverySubmissionDraft {
 
   final List<String> keepImageUrls;
   final List<_DeliveryRemoteFile> keepFileItems;
-  final List<File> newImageFiles;
+  final List<PickedImageData> newImageFiles;
   final List<_DeliveryLocalFile> newDocumentFiles;
   final List<String> linkUrls;
   final String notes;
@@ -191,7 +193,7 @@ class _ChatViewState extends State<ChatView> {
   static const Color _chatPanelSurface = Color(0xFFF8F4FD);
   static const Color _chatPanelBorder = Color(0xFFE7DFF4);
   static const int _adminReviewDetailsMaxLength = 150;
-  List<File> _selectedImages = [];
+  List<PickedImageData> _selectedImages = [];
   String? _otherUserPhotoUrl;
   final ImagePicker _picker = ImagePicker();
   final AccountAccessService _accountAccessService = AccountAccessService();
@@ -1166,8 +1168,17 @@ class _ChatViewState extends State<ChatView> {
 
       if (pickedFiles.isEmpty) return;
 
+      final images = await Future.wait(
+        pickedFiles.map(
+          (e) async => (
+            bytes: await e.readAsBytes(),
+            mimeType: e.mimeType ?? 'image/jpeg',
+          ),
+        ),
+      );
+
       setState(() {
-        _selectedImages.addAll(pickedFiles.map((e) => File(e.path)));
+        _selectedImages.addAll(images);
       });
     } catch (e) {
       if (!mounted) return;
@@ -1208,7 +1219,7 @@ class _ChatViewState extends State<ChatView> {
       await _controller.sendCombinedMessage(
         chatId: widget.chatId,
         text: text,
-        imageFiles: _selectedImages,
+        images: _selectedImages,
       );
 
       _messageController.clear();
@@ -2398,6 +2409,93 @@ class _ChatViewState extends State<ChatView> {
     return <String, dynamic>{};
   }
 
+  // Milestone-schedule (10% / 40% / 50%) helpers ---------------------------
+  //
+  // Contracts generated before this schedule shipped have no `milestones`
+  // key at all — `_milestones` returns an empty list for those, and every
+  // caller below falls back to the legacy flat `payment`/`deliveryData`/
+  // `paymentData` fields, so old contracts keep behaving exactly as they
+  // did before (single lump-sum payment, single delivery cycle).
+
+  List<Map<String, dynamic>> _milestones(Map<String, dynamic> contractData) {
+    final raw = contractData['milestones'];
+    if (raw is! List) return const <Map<String, dynamic>>[];
+    return raw.map((item) => _asMap(item)).toList();
+  }
+
+  /// Index of the first not-yet-paid milestone ("the milestone currently in
+  /// play"), or null once every milestone is paid (or there are none).
+  int? _currentMilestoneIndex(Map<String, dynamic> contractData) {
+    final milestones = _milestones(contractData);
+    for (var i = 0; i < milestones.length; i++) {
+      final status = (milestones[i]['status'] ?? '').toString().trim().toLowerCase();
+      if (status != 'paid') return i;
+    }
+    return null;
+  }
+
+  Map<String, dynamic>? _currentMilestoneOrNull(
+    Map<String, dynamic> contractData,
+  ) {
+    final milestones = _milestones(contractData);
+    if (milestones.isEmpty) return null;
+    final index = _currentMilestoneIndex(contractData);
+    if (index == null) return null;
+    return milestones[index];
+  }
+
+  /// The delivery data that live delivery actions (submit/approve/reject/
+  /// withdraw, and access-gating checks) should read: the current
+  /// milestone's own `deliveryData` for milestone-schedule contracts, or
+  /// the legacy flat `deliveryData` field for contracts with none. Do NOT
+  /// use the flat field directly for this — right after a milestone is
+  /// paid it still mirrors the *just-paid* milestone, not the newly
+  /// unlocked current one.
+  Map<String, dynamic> _currentDeliveryData(Map<String, dynamic> contractData) {
+    final milestone = _currentMilestoneOrNull(contractData);
+    return milestone != null
+        ? _asMap(milestone['deliveryData'])
+        : _asMap(contractData['deliveryData']);
+  }
+
+  /// Same idea as [_currentDeliveryData], for `paymentData`.
+  Map<String, dynamic> _currentPaymentData(Map<String, dynamic> contractData) {
+    final milestone = _currentMilestoneOrNull(contractData);
+    return milestone != null
+        ? _asMap(milestone['paymentData'])
+        : _asMap(contractData['paymentData']);
+  }
+
+  /// Writes a freshly-built `deliveryData` map back into
+  /// [updatedContractData]: onto `milestones[currentIndex]` for
+  /// milestone-schedule contracts (optionally also transitioning that
+  /// milestone's own `status`), and always mirrored into the legacy flat
+  /// `deliveryData` field so any not-yet-migrated reader still sees
+  /// "what's happening right now" instead of stale data.
+  void _applyDeliveryDataUpdate(
+    Map<String, dynamic> updatedContractData,
+    Map<String, dynamic> deliveryData, {
+    String? milestoneStatus,
+  }) {
+    updatedContractData['deliveryData'] = deliveryData;
+
+    final milestones = _milestones(updatedContractData);
+    if (milestones.isEmpty) return;
+    final index = _currentMilestoneIndex(updatedContractData);
+    if (index == null) return;
+
+    final updatedMilestones = milestones
+        .map((milestone) => Map<String, dynamic>.from(milestone))
+        .toList();
+    final milestone = Map<String, dynamic>.from(updatedMilestones[index]);
+    milestone['deliveryData'] = deliveryData;
+    if (milestoneStatus != null) {
+      milestone['status'] = milestoneStatus;
+    }
+    updatedMilestones[index] = milestone;
+    updatedContractData['milestones'] = updatedMilestones;
+  }
+
   Map<String, dynamic>? _nonEmptyMapOrNull(dynamic value) {
     final map = _asMap(value);
     return map.isEmpty ? null : map;
@@ -2676,8 +2774,13 @@ class _ChatViewState extends State<ChatView> {
   bool _currentUserCanAccessFinalDelivery(Map<String, dynamic> contractData) {
     if (_currentUserRole() == 'freelancer') return true;
 
-    final deliveryData = _asMap(contractData['deliveryData']);
-    final paymentData = _asMap(contractData['paymentData']);
+    // Milestone-aware: must check the CURRENT milestone's own payment/
+    // delivery state, not the flat mirror fields — right after an earlier
+    // milestone is paid, the flat fields still reflect *that* milestone
+    // until the next one is acted on, which would otherwise prematurely
+    // unlock the next (unpaid) milestone's files.
+    final deliveryData = _currentDeliveryData(contractData);
+    final paymentData = _currentPaymentData(contractData);
     final approval = _asMap(contractData['approval']);
     final deliveryStatus = _normalizeDeliveryStatus(deliveryData['status']);
     final paymentStatus = (paymentData['paymentStatus'] ?? '')
@@ -3487,8 +3590,25 @@ class _ChatViewState extends State<ChatView> {
 
     final contractData = _contractData;
     if (contractData == null) return false;
-    final deliveryData = _asMap(contractData['deliveryData']);
-    final paymentData = _asMap(contractData['paymentData']);
+
+    // Milestone-schedule contracts: only the current milestone can accept
+    // a submission, and only if it actually has a deliverable (milestone
+    // 1 / "on signing" has none — it's a payment-only gate).
+    final milestones = _milestones(contractData);
+    if (milestones.isNotEmpty) {
+      final currentIndex = _currentMilestoneIndex(contractData);
+      if (currentIndex == null) return false;
+      final milestone = milestones[currentIndex];
+      if (milestone['deliveryRequired'] != true) return false;
+      final milestoneStatus =
+          (milestone['status'] ?? '').toString().trim().toLowerCase();
+      if (milestoneStatus == 'locked' || milestoneStatus == 'paid') {
+        return false;
+      }
+    }
+
+    final deliveryData = _currentDeliveryData(contractData);
+    final paymentData = _currentPaymentData(contractData);
     final deliveryStatus = _normalizeDeliveryStatus(deliveryData['status']);
     final paymentStatus = (paymentData['paymentStatus'] ?? '')
         .toString()
@@ -3565,7 +3685,7 @@ class _ChatViewState extends State<ChatView> {
     if (await _showBlockedActionAndStopIfNeeded()) return;
 
     try {
-      final deliveryData = _asMap(contractData['deliveryData']);
+      final deliveryData = _currentDeliveryData(contractData);
       final currentImageItems = _deliveryImageItems(deliveryData);
       final currentFileItems = _deliveryFileItems(deliveryData);
       final draft = await _showDeliverySubmissionDialog(
@@ -3573,6 +3693,7 @@ class _ChatViewState extends State<ChatView> {
         isUpdate: _hasSubmittedWorkContent(deliveryData),
       );
       if (draft == null || !draft.hasContent) return;
+      if (!mounted) return;
 
       setState(() {
         _isSavingContract = true;
@@ -3604,7 +3725,7 @@ class _ChatViewState extends State<ChatView> {
         uploadedImageItems.addAll(
           await _controller.uploadDeliveryImages(
             chatId: widget.chatId,
-            imageFiles: draft.newImageFiles,
+            images: draft.newImageFiles,
           ),
         );
       }
@@ -3637,7 +3758,7 @@ class _ChatViewState extends State<ChatView> {
       for (final file in draft.newDocumentFiles) {
         final uploadedItem = await _controller.uploadDeliveryFile(
           chatId: widget.chatId,
-          file: file.file,
+          fileBytes: file.bytes,
           fileName: file.name,
         );
         uploadedFileItems.add(uploadedItem);
@@ -3659,7 +3780,7 @@ class _ChatViewState extends State<ChatView> {
 
       final submittedAt = DateTime.now().toIso8601String();
       final updatedContractData = Map<String, dynamic>.from(contractData);
-      final updatedDeliveryData = _asMap(updatedContractData['deliveryData']);
+      final updatedDeliveryData = _currentDeliveryData(updatedContractData);
       final updatedProgressData = _asMap(updatedContractData['progressData']);
       updatedDeliveryData['status'] = 'submitted';
       updatedDeliveryData['previewImageUrls'] = imagePreviewUrls;
@@ -3687,7 +3808,11 @@ class _ChatViewState extends State<ChatView> {
       updatedProgressData['stage'] = 'completed';
       updatedProgressData['updatedAt'] = submittedAt;
       updatedProgressData['updatedBy'] = _currentUserRole();
-      updatedContractData['deliveryData'] = updatedDeliveryData;
+      _applyDeliveryDataUpdate(
+        updatedContractData,
+        updatedDeliveryData,
+        milestoneStatus: 'submitted',
+      );
       updatedContractData['progressData'] = updatedProgressData;
 
       await _saveWorkflowContractData(updatedContractData);
@@ -3728,12 +3853,16 @@ class _ChatViewState extends State<ChatView> {
 
     try {
       final updatedContractData = Map<String, dynamic>.from(contractData);
-      final deliveryData = _asMap(updatedContractData['deliveryData']);
+      final deliveryData = _currentDeliveryData(updatedContractData);
       deliveryData['status'] = 'changes_requested';
       deliveryData['changesRequestedBy'] = _currentUserRole();
       deliveryData['changesRequestedAt'] = DateTime.now().toIso8601String();
       deliveryData['approvedByClient'] = false;
-      updatedContractData['deliveryData'] = deliveryData;
+      _applyDeliveryDataUpdate(
+        updatedContractData,
+        deliveryData,
+        milestoneStatus: 'changes_requested',
+      );
 
       await _saveWorkflowContractData(updatedContractData);
 
@@ -3793,12 +3922,16 @@ class _ChatViewState extends State<ChatView> {
 
     try {
       final updatedContractData = Map<String, dynamic>.from(contractData);
-      final deliveryData = _asMap(updatedContractData['deliveryData']);
+      final deliveryData = _currentDeliveryData(updatedContractData);
       deliveryData['status'] = 'approved';
       deliveryData['approvedBy'] = _currentUserRole();
       deliveryData['approvedAt'] = DateTime.now().toIso8601String();
       deliveryData['approvedByClient'] = true;
-      updatedContractData['deliveryData'] = deliveryData;
+      _applyDeliveryDataUpdate(
+        updatedContractData,
+        deliveryData,
+        milestoneStatus: 'approved',
+      );
 
       await _saveWorkflowContractData(updatedContractData);
 
@@ -3874,7 +4007,7 @@ class _ChatViewState extends State<ChatView> {
 
     try {
       final updatedContractData = Map<String, dynamic>.from(contractData);
-      final deliveryData = _asMap(updatedContractData['deliveryData']);
+      final deliveryData = _currentDeliveryData(updatedContractData);
       deliveryData['status'] = 'not_submitted';
       deliveryData['previewImageUrls'] = <String>[];
       deliveryData['imageUrls'] = <String>[];
@@ -3891,7 +4024,14 @@ class _ChatViewState extends State<ChatView> {
       deliveryData['approvedBy'] = '';
       deliveryData['approvedAt'] = '';
       deliveryData['approvedByClient'] = false;
-      updatedContractData['deliveryData'] = deliveryData;
+      // Reset back to "pending" (payable/actionable), never "locked" — the
+      // freelancer was already allowed into this milestone, withdrawing a
+      // submission shouldn't lock them back out of it.
+      _applyDeliveryDataUpdate(
+        updatedContractData,
+        deliveryData,
+        milestoneStatus: 'pending',
+      );
 
       await _saveWorkflowContractData(updatedContractData);
 
@@ -5405,8 +5545,8 @@ class _ChatViewState extends State<ChatView> {
     final currentStageIndex = _contractProgressIndex(currentStage);
     final currentStageColor = _contractProgressColor(currentStage);
     final showClientTimeline = currentUserRole == 'client';
-    final deliveryData = _asMap(contractData['deliveryData']);
-    final paymentData = _asMap(contractData['paymentData']);
+    final deliveryData = _currentDeliveryData(contractData);
+    final paymentData = _currentPaymentData(contractData);
     final deliveryStatus = _normalizeDeliveryStatus(deliveryData['status']);
     final paymentStatus = (paymentData['paymentStatus'] ?? '')
         .toString()
@@ -5984,13 +6124,25 @@ class _ChatViewState extends State<ChatView> {
     );
   }
 
-  Future<void> _openMoyasarPayment() async {
+  Future<void> _openMoyasarPayment({int? milestoneIndex}) async {
     final contractData = _contractData;
     if (contractData == null) return;
     if (await _showBlockedActionAndStopIfNeeded()) return;
 
-    final payment = _asMap(contractData['payment']);
-    final amountText = (payment['amount'] ?? '').toString().trim();
+    final milestones = _milestones(contractData);
+    final resolvedMilestoneIndex =
+        milestoneIndex ?? _currentMilestoneIndex(contractData);
+    final targetMilestone =
+        (milestones.isNotEmpty && resolvedMilestoneIndex != null)
+        ? milestones[resolvedMilestoneIndex]
+        : null;
+
+    // Milestone-schedule contracts: charge exactly the target milestone's
+    // share, not the whole contract. Legacy contracts with no milestones
+    // fall back to today's single lump-sum amount.
+    final amountText = targetMilestone != null
+        ? (targetMilestone['amount'] ?? '').toString().trim()
+        : (_asMap(contractData['payment'])['amount'] ?? '').toString().trim();
     final amount = double.tryParse(amountText);
 
     if (amount == null || amount <= 0) {
@@ -5998,43 +6150,154 @@ class _ChatViewState extends State<ChatView> {
       return;
     }
 
+    if (targetMilestone != null) {
+      final milestoneStatus =
+          (targetMilestone['status'] ?? '').toString().trim().toLowerCase();
+      final isPayable = targetMilestone['deliveryRequired'] == false
+          ? milestoneStatus == 'pending'
+          : milestoneStatus == 'approved';
+      if (!isPayable) {
+        await _showErrorDialog('This milestone is not ready for payment yet.');
+        return;
+      }
+      if (resolvedMilestoneIndex! > 0) {
+        final previousStatus = (milestones[resolvedMilestoneIndex - 1]['status'] ?? '')
+            .toString()
+            .trim()
+            .toLowerCase();
+        if (previousStatus != 'paid') {
+          await _showErrorDialog(
+            'A previous milestone has not been paid yet.',
+          );
+          return;
+        }
+      }
+    }
+
     final amountInHalalas = (amount * 100).round();
+    final paymentDescription = targetMilestone != null
+        ? (targetMilestone['label'] ?? 'Contract Payment').toString()
+        : 'Contract Payment';
 
     final paymentConfig = PaymentConfig(
       publishableApiKey: moyasarPublishableKey,
       amount: amountInHalalas,
-      description: 'Contract Payment',
+      description: paymentDescription,
     );
 
     final paymentCompleted = await Navigator.push<bool>(
       context,
       MaterialPageRoute(
         builder: (pageContext) => Scaffold(
-          appBar: AppBar(title: const Text('Payment')),
+          appBar: AppBar(
+            title: const Text('Payment'),
+            backgroundColor: primary,
+            foregroundColor: Colors.white,
+            elevation: 0,
+          ),
+          backgroundColor: Colors.white,
           body: Padding(
             padding: const EdgeInsets.all(16),
-            child: CreditCard(
-              config: paymentConfig,
-              onPaymentResult: (result) async {
-                if (result is PaymentResponse &&
-                    result.status == PaymentStatus.paid) {
-                  try {
-                    await _verifyPayment(result.id);
+            child: kIsWeb
+                ? WebMoyasarCardForm(
+                    config: paymentConfig,
+                    onPaymentResult: (result) async {
+                      if (result is PaymentResponse &&
+                          result.status == PaymentStatus.paid) {
+                        try {
+                          await _verifyPayment(
+                            result.id,
+                            milestoneIndex: targetMilestone != null
+                                ? resolvedMilestoneIndex
+                                : null,
+                          );
 
-                    if (pageContext.mounted) {
-                      Navigator.of(pageContext).pop(true);
-                    }
-                  } catch (error, stackTrace) {
-                    _logCaughtError('Verify payment error', error, stackTrace);
-                    if (pageContext.mounted) {
-                      await _showErrorDialog(_friendlyErrorMessage(error));
-                    }
-                  }
-                } else {
-                  await _showErrorDialog('Payment failed');
-                }
-              },
-            ),
+                          if (pageContext.mounted) {
+                            Navigator.of(pageContext).pop(true);
+                          }
+                        } catch (error, stackTrace) {
+                          _logCaughtError(
+                            'Verify payment error',
+                            error,
+                            stackTrace,
+                          );
+                          if (pageContext.mounted) {
+                            await _showErrorDialog(_friendlyErrorMessage(error));
+                          }
+                        }
+                      } else {
+                        await _showErrorDialog('Payment failed');
+                      }
+                    },
+                    onInitiated: (result) async {
+                      final source = result.source;
+                      final transactionUrl =
+                          source is CardPaymentResponseSource
+                              ? (source.transactionUrl ?? '')
+                              : '';
+                      if (transactionUrl.isEmpty) {
+                        await _showErrorDialog('Payment failed');
+                        return;
+                      }
+
+                      await launchUrl(
+                        Uri.parse(transactionUrl),
+                        webOnlyWindowName: '_blank',
+                      );
+
+                      if (!pageContext.mounted) return;
+
+                      final confirmed = await showDialog<bool>(
+                        context: pageContext,
+                        barrierDismissible: false,
+                        builder: (_) => PaymentConfirmationDialog(
+                          verify: () => _verifyPayment(
+                            result.id,
+                            milestoneIndex: targetMilestone != null
+                                ? resolvedMilestoneIndex
+                                : null,
+                          ),
+                        ),
+                      );
+
+                      if (confirmed == true) {
+                        if (pageContext.mounted) {
+                          Navigator.of(pageContext).pop(true);
+                        }
+                      } else if (pageContext.mounted) {
+                        await _showErrorDialog(
+                          'Payment was not confirmed. Please try again.',
+                        );
+                      }
+                    },
+                  )
+                : CreditCard(
+                    config: paymentConfig,
+                    onPaymentResult: (result) async {
+                      if (result is PaymentResponse &&
+                          result.status == PaymentStatus.paid) {
+                        try {
+                          await _verifyPayment(
+                            result.id,
+                            milestoneIndex: targetMilestone != null
+                                ? resolvedMilestoneIndex
+                                : null,
+                          );
+
+                          if (pageContext.mounted) {
+                            Navigator.of(pageContext).pop(true);
+                          }
+                        } catch (error, stackTrace) {
+                          _logCaughtError('Verify payment error', error, stackTrace);
+                          if (pageContext.mounted) {
+                            await _showErrorDialog(_friendlyErrorMessage(error));
+                          }
+                        }
+                      } else {
+                        await _showErrorDialog('Payment failed');
+                      }
+                    },
+                  ),
           ),
         ),
       ),
@@ -6070,7 +6333,13 @@ class _ChatViewState extends State<ChatView> {
       context,
       MaterialPageRoute(
         builder: (pageContext) => Scaffold(
-          appBar: AppBar(title: const Text('Termination Payment')),
+          appBar: AppBar(
+            title: const Text('Termination Payment'),
+            backgroundColor: primary,
+            foregroundColor: Colors.white,
+            elevation: 0,
+          ),
+          backgroundColor: Colors.white,
           body: Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
@@ -6096,36 +6365,106 @@ class _ChatViewState extends State<ChatView> {
                   ),
                 ),
                 Expanded(
-                  child: CreditCard(
-                    config: paymentConfig,
-                    onPaymentResult: (result) async {
-                      if (result is PaymentResponse &&
-                          result.status == PaymentStatus.paid) {
-                        try {
-                          await _verifyTerminationCompensationPayment(
-                            result.id,
-                          );
+                  child: kIsWeb
+                      ? WebMoyasarCardForm(
+                          config: paymentConfig,
+                          onPaymentResult: (result) async {
+                            if (result is PaymentResponse &&
+                                result.status == PaymentStatus.paid) {
+                              try {
+                                await _verifyTerminationCompensationPayment(
+                                  result.id,
+                                );
 
-                          if (pageContext.mounted) {
-                            Navigator.of(pageContext).pop(true);
-                          }
-                        } catch (error, stackTrace) {
-                          _logCaughtError(
-                            'Verify termination payment error',
-                            error,
-                            stackTrace,
-                          );
-                          if (pageContext.mounted) {
-                            await _showErrorDialog(
-                              _friendlyErrorMessage(error),
+                                if (pageContext.mounted) {
+                                  Navigator.of(pageContext).pop(true);
+                                }
+                              } catch (error, stackTrace) {
+                                _logCaughtError(
+                                  'Verify termination payment error',
+                                  error,
+                                  stackTrace,
+                                );
+                                if (pageContext.mounted) {
+                                  await _showErrorDialog(
+                                    _friendlyErrorMessage(error),
+                                  );
+                                }
+                              }
+                            } else {
+                              await _showErrorDialog('Payment failed');
+                            }
+                          },
+                          onInitiated: (result) async {
+                            final source = result.source;
+                            final transactionUrl =
+                                source is CardPaymentResponseSource
+                                    ? (source.transactionUrl ?? '')
+                                    : '';
+                            if (transactionUrl.isEmpty) {
+                              await _showErrorDialog('Payment failed');
+                              return;
+                            }
+
+                            await launchUrl(
+                              Uri.parse(transactionUrl),
+                              webOnlyWindowName: '_blank',
                             );
-                          }
-                        }
-                      } else {
-                        await _showErrorDialog('Payment failed');
-                      }
-                    },
-                  ),
+
+                            if (!pageContext.mounted) return;
+
+                            final confirmed = await showDialog<bool>(
+                              context: pageContext,
+                              barrierDismissible: false,
+                              builder: (_) => PaymentConfirmationDialog(
+                                verify: () =>
+                                    _verifyTerminationCompensationPayment(
+                                  result.id,
+                                ),
+                              ),
+                            );
+
+                            if (confirmed == true) {
+                              if (pageContext.mounted) {
+                                Navigator.of(pageContext).pop(true);
+                              }
+                            } else if (pageContext.mounted) {
+                              await _showErrorDialog(
+                                'Payment was not confirmed. Please try again.',
+                              );
+                            }
+                          },
+                        )
+                      : CreditCard(
+                          config: paymentConfig,
+                          onPaymentResult: (result) async {
+                            if (result is PaymentResponse &&
+                                result.status == PaymentStatus.paid) {
+                              try {
+                                await _verifyTerminationCompensationPayment(
+                                  result.id,
+                                );
+
+                                if (pageContext.mounted) {
+                                  Navigator.of(pageContext).pop(true);
+                                }
+                              } catch (error, stackTrace) {
+                                _logCaughtError(
+                                  'Verify termination payment error',
+                                  error,
+                                  stackTrace,
+                                );
+                                if (pageContext.mounted) {
+                                  await _showErrorDialog(
+                                    _friendlyErrorMessage(error),
+                                  );
+                                }
+                              }
+                            } else {
+                              await _showErrorDialog('Payment failed');
+                            }
+                          },
+                        ),
                 ),
               ],
             ),
@@ -6144,7 +6483,7 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
-  Future<void> _verifyPayment(String paymentId) async {
+  Future<void> _verifyPayment(String paymentId, {int? milestoneIndex}) async {
     await _accountAccessService.ensureCurrentUserNotBlocked();
 
     final chatDoc = await FirebaseFirestore.instance
@@ -6157,6 +6496,7 @@ class _ChatViewState extends State<ChatView> {
 
     debugPrint('Verify payment paymentId: $paymentId');
     debugPrint('Verify payment requestId: $requestId');
+    debugPrint('Verify payment milestoneIndex: $milestoneIndex');
 
     final response = await _postContractApi(
       endpointPath: 'verify-payment',
@@ -6164,6 +6504,7 @@ class _ChatViewState extends State<ChatView> {
         'paymentId': paymentId,
         'requestId': requestId,
         'paidBy': _currentUserRole(),
+        if (milestoneIndex != null) 'milestoneIndex': milestoneIndex,
       },
       logLabel: 'Verify payment',
     );
@@ -6292,7 +6633,35 @@ class _ChatViewState extends State<ChatView> {
       return const SizedBox.shrink();
     }
 
-    final deliveryData = _asMap(contractData['deliveryData']);
+    // Milestone-schedule contracts: milestone 1 ("on signing") has no
+    // deliverable at all — it's a payment-only gate — so there is nothing
+    // to render in a "Submitted Work" card for it.
+    final currentMilestone = _currentMilestoneOrNull(contractData);
+    if (currentMilestone != null && currentMilestone['deliveryRequired'] == false) {
+      return _buildChatPanelContainer(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              (currentMilestone['label'] ?? 'Milestone 1').toString(),
+              style: _chatPanelTitleStyle.copyWith(fontSize: 14),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'This milestone has no deliverable — it is due on contract signing. Payment unlocks the next milestone.',
+              style: TextStyle(
+                color: Colors.black54,
+                fontSize: 12.5,
+                height: 1.35,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final deliveryData = _currentDeliveryData(contractData);
     final progressData = _asMap(contractData['progressData']);
     final currentStage = _normalizeContractProgressStage(progressData['stage']);
     final deliveryStatus = _normalizeDeliveryStatus(deliveryData['status']);
@@ -7186,8 +7555,8 @@ class _ChatViewState extends State<ChatView> {
     final termination =
         (approval['termination'] as Map<String, dynamic>?) ??
         const <String, dynamic>{};
-    final paymentData = _asMap(contractData['paymentData']);
-    final deliveryData = _asMap(contractData['deliveryData']);
+    final paymentData = _currentPaymentData(contractData);
+    final deliveryData = _currentDeliveryData(contractData);
     final paymentStatus = (paymentData['paymentStatus'] ?? '')
         .toString()
         .trim()
@@ -7840,6 +8209,142 @@ class _ChatViewState extends State<ChatView> {
     );
   }
 
+  /// One "stage card" for a single milestone in the 30/40/30 schedule —
+  /// used by `_buildApprovedWorkProgressTab` when the contract has a
+  /// `milestones` array. Reuses `_buildApprovedPanelContentCard` so it
+  /// looks consistent with the rest of the workspace UI.
+  Widget _buildMilestoneStatusCard({
+    required int index,
+    required List<Map<String, dynamic>> milestones,
+    required bool isClientView,
+  }) {
+    final milestone = milestones[index];
+    final status = (milestone['status'] ?? '').toString().trim().toLowerCase();
+    final label = (milestone['label'] ?? 'Milestone ${index + 1}').toString();
+    final deliveryRequired = milestone['deliveryRequired'] == true;
+
+    if (status == 'locked') {
+      return _buildApprovedPanelContentCard(
+        title: label,
+        subtitle: 'Locked',
+        children: [
+          Text(
+            'Unlocks after Milestone $index is paid.',
+            style: const TextStyle(
+              color: Colors.black54,
+              fontSize: 12.5,
+              height: 1.35,
+            ),
+          ),
+        ],
+      );
+    }
+
+    if (status == 'paid') {
+      return _buildApprovedPanelContentCard(
+        title: label,
+        subtitle: 'Paid',
+        children: [
+          Row(
+            children: const [
+              Icon(
+                Icons.check_circle_rounded,
+                color: Color(0xFF2E7D32),
+                size: 18,
+              ),
+              SizedBox(width: 8),
+              Text(
+                'Payment completed',
+                style: TextStyle(
+                  color: Colors.black87,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ],
+      );
+    }
+
+    // Current/active milestone — either pending payment (milestone 1, no
+    // deliverable) or somewhere in its own submit/approve delivery cycle.
+    final deliveryData = _asMap(milestone['deliveryData']);
+    final deliveryStatus = _normalizeDeliveryStatus(deliveryData['status']);
+    final hasSubmittedWork = _hasSubmittedWorkContent(deliveryData);
+    final canPay = deliveryRequired
+        ? _isDeliveryApproved(deliveryStatus)
+        : status == 'pending';
+    final previousPaid =
+        index == 0 ||
+        (milestones[index - 1]['status'] ?? '').toString().trim().toLowerCase() ==
+            'paid';
+
+    final subtitle = deliveryRequired
+        ? _deliveryStatusLabel(deliveryStatus)
+        : 'Awaiting Payment';
+    final message = deliveryRequired
+        ? _deliveryStatusPaymentMessage(
+            status: deliveryStatus,
+            isClientView: isClientView,
+          )
+        : (isClientView
+              ? 'Pay this milestone to let the freelancer start working.'
+              : 'Waiting for the client to pay this milestone before work can start.');
+
+    return _buildApprovedPanelContentCard(
+      title: label,
+      subtitle: subtitle,
+      children: [
+        Text(
+          message,
+          style: const TextStyle(
+            color: Colors.black87,
+            fontSize: 12.5,
+            height: 1.4,
+          ),
+        ),
+        if (isClientView) ...[
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: _isSavingContract || !canPay || !previousPaid
+                  ? null
+                  : () => _openMoyasarPayment(milestoneIndex: index),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: primary,
+                foregroundColor: Colors.white,
+                disabledBackgroundColor: primary.withOpacity(0.35),
+                disabledForegroundColor: Colors.white70,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              icon: const Icon(Icons.payments_outlined),
+              label: Text(
+                canPay
+                    ? 'Pay Now'
+                    : deliveryRequired && hasSubmittedWork
+                    ? 'Approve Work to Pay'
+                    : deliveryRequired
+                    ? 'Waiting for Submitted Work'
+                    : 'Not Ready Yet',
+              ),
+            ),
+          ),
+        ] else if (canPay) ...[
+          const SizedBox(height: 12),
+          const Text(
+            'Payment will be available to the client after approval.',
+            style: TextStyle(color: Colors.black54, fontSize: 12, height: 1.35),
+          ),
+        ],
+      ],
+    );
+  }
+
   Widget _buildApprovedWorkProgressTab() {
     final contractData = _contractData;
     if (contractData == null) return const SizedBox.shrink();
@@ -7849,8 +8354,8 @@ class _ChatViewState extends State<ChatView> {
         .toString()
         .trim()
         .toLowerCase();
-    final deliveryData = _asMap(contractData['deliveryData']);
-    final paymentData = _asMap(contractData['paymentData']);
+    final deliveryData = _currentDeliveryData(contractData);
+    final paymentData = _currentPaymentData(contractData);
     final deliveryStatus = _normalizeDeliveryStatus(deliveryData['status']);
     final paymentStatus = (paymentData['paymentStatus'] ?? '')
         .toString()
@@ -7863,6 +8368,7 @@ class _ChatViewState extends State<ChatView> {
         deliveryStatus == 'paid_delivered';
     final isClientView = _currentUserRole() == 'client';
     final shouldShowWorkProgress = _shouldShowWorkProgressAction();
+    final milestones = _milestones(contractData);
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -7877,8 +8383,41 @@ class _ChatViewState extends State<ChatView> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: shouldShowWorkProgress
+            children: !shouldShowWorkProgress
                 ? [
+                    _buildApprovedPanelContentCard(
+                      title: 'Work Delivery',
+                      children: [
+                        const Text(
+                          'No work has been submitted yet.',
+                          style: TextStyle(
+                            color: Colors.black87,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ]
+                : milestones.isNotEmpty
+                ? [
+                    // Milestone-schedule contract: one active "Submitted
+                    // Work" surface for the current milestone, then a
+                    // stage card per milestone (paid / locked / current).
+                    _buildDeliverySection(contractStatus),
+                    const SizedBox(height: 14),
+                    for (var i = 0; i < milestones.length; i++) ...[
+                      _buildMilestoneStatusCard(
+                        index: i,
+                        milestones: milestones,
+                        isClientView: isClientView,
+                      ),
+                      if (i != milestones.length - 1)
+                        const SizedBox(height: 14),
+                    ],
+                  ]
+                : [
+                    // Legacy contract with no milestone schedule — exact
+                    // original single lump-sum flow, unchanged.
                     _buildDeliverySection(contractStatus),
                     const SizedBox(height: 14),
                     _buildApprovedPanelContentCard(
@@ -7971,20 +8510,6 @@ class _ChatViewState extends State<ChatView> {
                             ),
                           ),
                         ],
-                      ],
-                    ),
-                  ]
-                : [
-                    _buildApprovedPanelContentCard(
-                      title: 'Work Delivery',
-                      children: [
-                        const Text(
-                          'No work has been submitted yet.',
-                          style: TextStyle(
-                            color: Colors.black87,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
                       ],
                     ),
                   ],
@@ -8122,20 +8647,21 @@ class _ChatViewState extends State<ChatView> {
   }
 
   Future<List<_DeliveryLocalFile>> _pickDeliveryDocumentFiles() async {
-    final result = await FilePicker.platform.pickFiles(allowMultiple: true);
+    final result = await FilePicker.platform.pickFiles(
+      allowMultiple: true,
+      withData: true,
+    );
     if (result == null || result.files.isEmpty)
       return const <_DeliveryLocalFile>[];
 
     final files = <_DeliveryLocalFile>[];
     for (final item in result.files) {
-      final path = (item.path ?? '').trim();
-      if (path.isEmpty) continue;
+      final bytes = item.bytes;
+      if (bytes == null || bytes.isEmpty) continue;
       files.add(
         _DeliveryLocalFile(
-          file: File(path),
-          name: item.name.trim().isEmpty
-              ? _fileNameFromPath(path)
-              : item.name.trim(),
+          bytes: bytes,
+          name: item.name.trim().isEmpty ? 'attachment' : item.name.trim(),
         ),
       );
     }
@@ -8164,7 +8690,7 @@ class _ChatViewState extends State<ChatView> {
           final existingFileItems = List<_DeliveryRemoteFile>.from(
             _deliveryFileItems(deliveryData),
           );
-          final newImageFiles = <File>[];
+          final newImageFiles = <PickedImageData>[];
           final newDocumentFiles = <_DeliveryLocalFile>[];
           String validationMessage = '';
 
@@ -8172,12 +8698,17 @@ class _ChatViewState extends State<ChatView> {
             final pickedFiles = await _picker.pickMultiImage(imageQuality: 85);
             if (pickedFiles.isEmpty) return;
 
+            final images = await Future.wait(
+              pickedFiles.map(
+                (item) async => (
+                  bytes: await item.readAsBytes(),
+                  mimeType: item.mimeType ?? 'image/jpeg',
+                ),
+              ),
+            );
+
             setDialogState(() {
-              newImageFiles.addAll(
-                pickedFiles
-                    .map((item) => File(item.path))
-                    .where((file) => file.path.trim().isNotEmpty),
-              );
+              newImageFiles.addAll(images);
             });
           }
 
@@ -8321,8 +8852,8 @@ class _ChatViewState extends State<ChatView> {
                                           borderRadius: BorderRadius.circular(
                                             12,
                                           ),
-                                          child: Image.file(
-                                            imageFile,
+                                          child: Image.memory(
+                                            imageFile.bytes,
                                             width: 88,
                                             height: 88,
                                             fit: BoxFit.cover,
@@ -8509,7 +9040,9 @@ class _ChatViewState extends State<ChatView> {
                         keepFileItems: List<_DeliveryRemoteFile>.from(
                           existingFileItems,
                         ),
-                        newImageFiles: List<File>.from(newImageFiles),
+                        newImageFiles: List<PickedImageData>.from(
+                          newImageFiles,
+                        ),
                         newDocumentFiles: List<_DeliveryLocalFile>.from(
                           newDocumentFiles,
                         ),
@@ -8810,11 +9343,13 @@ class _ChatViewState extends State<ChatView> {
 
       final chatData = chatDoc.data();
       final requestId = _extractRequestId(chatData);
+      final proposalId = (chatData?['proposalId'] ?? '').toString().trim();
 
       final response = await _postContractApi(
         endpointPath: 'approve-contract',
         body: {
           'requestId': requestId,
+          if (proposalId.isNotEmpty) 'proposalId': proposalId,
           'role': _currentUserRole(),
           'signatureData': signatureData,
         },
@@ -9028,11 +9563,13 @@ class _ChatViewState extends State<ChatView> {
 
       final chatData = chatDoc.data();
       final requestId = _extractRequestId(chatData);
+      final proposalId = (chatData?['proposalId'] ?? '').toString().trim();
 
       final response = await _postContractApi(
         endpointPath: 'request-termination',
         body: {
           'requestId': requestId,
+          if (proposalId.isNotEmpty) 'proposalId': proposalId,
           'role': _currentUserRole(),
           if ((terminationMode ?? '').isNotEmpty)
             'terminationMode': terminationMode,
@@ -9128,10 +9665,15 @@ class _ChatViewState extends State<ChatView> {
 
       final chatData = chatDoc.data();
       final requestId = _extractRequestId(chatData);
+      final proposalId = (chatData?['proposalId'] ?? '').toString().trim();
 
       final response = await _postContractApi(
         endpointPath: 'approve-termination',
-        body: {'requestId': requestId, 'role': _currentUserRole()},
+        body: {
+          'requestId': requestId,
+          if (proposalId.isNotEmpty) 'proposalId': proposalId,
+          'role': _currentUserRole(),
+        },
         logLabel: 'Approve termination',
       );
 
@@ -9207,10 +9749,15 @@ class _ChatViewState extends State<ChatView> {
 
       final chatData = chatDoc.data();
       final requestId = _extractRequestId(chatData);
+      final proposalId = (chatData?['proposalId'] ?? '').toString().trim();
 
       final response = await _postContractApi(
         endpointPath: 'reject-termination',
-        body: {'requestId': requestId, 'role': _currentUserRole()},
+        body: {
+          'requestId': requestId,
+          if (proposalId.isNotEmpty) 'proposalId': proposalId,
+          'role': _currentUserRole(),
+        },
         logLabel: 'Reject termination',
       );
 
@@ -9284,11 +9831,17 @@ class _ChatViewState extends State<ChatView> {
           .doc(widget.chatId)
           .get();
 
-      final requestId = _extractRequestId(chatDoc.data());
+      final chatData = chatDoc.data();
+      final requestId = _extractRequestId(chatData);
+      final proposalId = (chatData?['proposalId'] ?? '').toString().trim();
 
       final response = await _postContractApi(
         endpointPath: 'cancel-termination',
-        body: {'requestId': requestId, 'role': _currentUserRole()},
+        body: {
+          'requestId': requestId,
+          if (proposalId.isNotEmpty) 'proposalId': proposalId,
+          'role': _currentUserRole(),
+        },
         logLabel: 'Cancel termination',
       );
 
@@ -9342,9 +9895,25 @@ class _ChatViewState extends State<ChatView> {
 
   Future<void> downloadContract(String requestId) async {
     try {
+      // requestId alone only resolves contracts from the direct-request
+      // flow. Contracts created via an accepted announcement proposal live
+      // under the proposal instead, so — same as every other contract
+      // action in this file — the chat doc's proposalId has to be sent
+      // too, or the backend can't find the contract and downloading fails.
+      final chatDoc = await FirebaseFirestore.instance
+          .collection('chat')
+          .doc(widget.chatId)
+          .get();
+      final proposalId = (chatDoc.data()?['proposalId'] ?? '')
+          .toString()
+          .trim();
+
       final url = _backendUri(
         'download-contract-pdf',
-        queryParameters: {'requestId': requestId},
+        queryParameters: {
+          'requestId': requestId,
+          if (proposalId.isNotEmpty) 'proposalId': proposalId,
+        },
       );
       debugPrint('Download contract URL: $url');
 
@@ -9379,10 +9948,15 @@ class _ChatViewState extends State<ChatView> {
 
       final chatData = chatDoc.data();
       final requestId = _extractRequestId(chatData);
+      final proposalId = (chatData?['proposalId'] ?? '').toString().trim();
 
       final response = await _postContractApi(
         endpointPath: 'cancel-approval',
-        body: {'requestId': requestId, 'role': _currentUserRole()},
+        body: {
+          'requestId': requestId,
+          if (proposalId.isNotEmpty) 'proposalId': proposalId,
+          'role': _currentUserRole(),
+        },
         logLabel: 'Cancel approval',
       );
 
@@ -9469,10 +10043,15 @@ class _ChatViewState extends State<ChatView> {
 
       final chatData = chatDoc.data();
       final requestId = _extractRequestId(chatData);
+      final proposalId = (chatData?['proposalId'] ?? '').toString().trim();
 
       final response = await _postContractApi(
         endpointPath: 'disapprove-contract',
-        body: {'requestId': requestId, 'role': _currentUserRole()},
+        body: {
+          'requestId': requestId,
+          if (proposalId.isNotEmpty) 'proposalId': proposalId,
+          'role': _currentUserRole(),
+        },
         logLabel: 'Disapprove contract',
       );
 
@@ -9603,8 +10182,13 @@ class _ChatViewState extends State<ChatView> {
           .doc(widget.chatId)
           .get();
 
-      final requestId = _extractRequestId(chatDoc.data());
+      final chatData = chatDoc.data();
+      final requestId = _extractRequestId(chatData);
+      final proposalId = (chatData?['proposalId'] ?? '').toString().trim();
       final body = <String, dynamic>{'requestId': requestId};
+      if (proposalId.isNotEmpty) {
+        body['proposalId'] = proposalId;
+      }
       if (includeRole) {
         body['role'] = _currentUserRole();
       }
@@ -11100,8 +11684,8 @@ class _ChatViewState extends State<ChatView> {
                                           borderRadius: BorderRadius.circular(
                                             12,
                                           ),
-                                          child: Image.file(
-                                            _selectedImages[index],
+                                          child: Image.memory(
+                                            _selectedImages[index].bytes,
                                             width: 90,
                                             height: 90,
                                             fit: BoxFit.cover,

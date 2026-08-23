@@ -3,7 +3,9 @@ import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 import '../controlles/account_access_service.dart';
 import '../controlles/recommendation_controller.dart';
@@ -151,14 +153,24 @@ class _AnnouncementViewState extends State<AnnouncementView> {
 
   Future<bool> _hasInternetConnection() async {
     final connectivityResult = await Connectivity().checkConnectivity();
-    if (connectivityResult == ConnectivityResult.none) return false;
+    if (connectivityResult.every((r) => r == ConnectivityResult.none)) {
+      return false;
+    }
 
+    // على الويب: connectivity_plus أصلاً يعتمد على navigator.onLine
+    // بالمتصفح، وهذا مؤشر دقيق بما فيه الكفاية بيئة الويب. أي طلب
+    // خارجي إضافي (زي gstatic) يرفضه المتصفح بسبب CORS حتى لو
+    // السيرفر رد فعلياً، فيرجع "لا يوجد اتصال" بشكل خاطئ.
+    if (kIsWeb) return true;
+
+    // على الموبايل/الديسكتوب: نتأكد بطلب حقيقي (بدل InternetAddress.lookup
+    // اللي أصلاً غير مدعوم بالويب) لأن الاتصال بشبكة مو دايماً يعني
+    // نت شغّال فعلياً (زي شبكات بوابة captive).
     try {
-      final lookup = await InternetAddress.lookup(
-        'example.com',
-      ).timeout(const Duration(seconds: 3));
-
-      return lookup.isNotEmpty && lookup.first.rawAddress.isNotEmpty;
+      final response = await http
+          .get(Uri.parse('https://www.gstatic.com/generate_204'))
+          .timeout(const Duration(seconds: 3));
+      return response.statusCode == 204 || response.statusCode == 200;
     } catch (_) {
       return false;
     }

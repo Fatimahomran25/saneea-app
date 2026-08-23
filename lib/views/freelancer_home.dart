@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'request_action_button.dart';
 import 'freelancer_profile.dart';
 import 'freelancer_incoming_requests_view.dart';
 import 'browse_announcements_view.dart';
@@ -747,32 +746,6 @@ class _FreelancerBottomNavigationBar extends StatelessWidget {
     required this.onFavoritesTap,
   });
 
-  Widget _filledCircle({
-    required Color color,
-    required IconData icon,
-    required double iconSize,
-    required double dimension,
-  }) {
-    return Container(
-      width: dimension,
-      height: dimension,
-      decoration: BoxDecoration(
-        color: color,
-        shape: BoxShape.circle,
-        boxShadow: [
-          BoxShadow(
-            color: color.withValues(alpha: 0.18),
-            blurRadius: 14,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Center(
-        child: Icon(icon, color: Colors.white, size: iconSize),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -841,11 +814,18 @@ class _FreelancerBottomNavigationBar extends StatelessWidget {
           ),
           GestureDetector(
             onTap: onHomeTap,
-            child: _filledCircle(
-              color: primary,
-              icon: Icons.home_rounded,
-              iconSize: 25,
-              dimension: 50,
+            // نفس شكل ولون باقي أيقونات الشريط تماماً (بدون دائرة
+            // بنفسجية خلفها).
+            child: SizedBox(
+              width: 40,
+              height: 40,
+              child: Center(
+                child: Icon(
+                  Icons.home_outlined,
+                  color: _FreelancerHomeViewState._inactiveNav,
+                  size: 28,
+                ),
+              ),
             ),
           ),
           GestureDetector(

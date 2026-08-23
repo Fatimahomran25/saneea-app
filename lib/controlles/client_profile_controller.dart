@@ -1,14 +1,39 @@
 import 'dart:async';
-import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 
 import '../models/client_profile_model.dart';
 import 'account_access_service.dart';
 import 'messaging_controller.dart';
+
+// يحوّل أخطاء Firebase التقنية الخام إلى رسالة مفهومة للمستخدم، بدل
+// عرض النص التقني الخام (اسم bucket، روابط، أكواد داخلية...).
+String _friendlyError(Object e) {
+  if (e is FirebaseException) {
+    switch (e.code) {
+      case 'quota-exceeded':
+        return "We're experiencing high demand right now. Please try again later.";
+      case 'unauthorized':
+      case 'permission-denied':
+        return "You don't have permission to do this.";
+      case 'unauthenticated':
+        return "Please log in again and try.";
+      case 'network-request-failed':
+      case 'unavailable':
+        return "Network error. Please check your connection and try again.";
+      case 'canceled':
+        return "Upload was canceled.";
+      default:
+        return "Something went wrong. Please try again.";
+    }
+  }
+  return "Something went wrong. Please try again.";
+}
 
 class ClientProfileController extends ChangeNotifier {
   final _auth = FirebaseAuth.instance;
@@ -28,7 +53,7 @@ class ClientProfileController extends ChangeNotifier {
   final emailCtrl = TextEditingController();
   final bioCtrl = TextEditingController();
 
-  File? pickedImageFile;
+  Uint8List? pickedImageFile;
   String? viewedUserId;
 
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _profileSub;
@@ -90,13 +115,13 @@ class ClientProfileController extends ChangeNotifier {
           isLoading = false;
           notifyListeners();
         } catch (e) {
-          error = e.toString();
+          error = _friendlyError(e);
           isLoading = false;
           notifyListeners();
         }
       });
     } catch (e) {
-      error = e.toString();
+      error = _friendlyError(e);
       isLoading = false;
       notifyListeners();
     }
@@ -265,9 +290,9 @@ class ClientProfileController extends ChangeNotifier {
     return null;
   }
 
-  void setPickedImage(File file) {
+  void setPickedImage(Uint8List bytes) {
     if (!isEditing || !isOwnProfile) return;
-    pickedImageFile = file;
+    pickedImageFile = bytes;
     notifyListeners();
   }
 
@@ -275,7 +300,10 @@ class ClientProfileController extends ChangeNotifier {
     if (pickedImageFile == null) return profile?.photoUrl;
 
     final ref = _storage.ref().child('profile_images').child('$uid.jpg');
-    await ref.putFile(pickedImageFile!);
+    await ref.putData(
+      pickedImageFile!,
+      SettableMetadata(contentType: 'image/jpeg'),
+    );
     return await ref.getDownloadURL();
   }
 
@@ -335,7 +363,7 @@ class ClientProfileController extends ChangeNotifier {
       notifyListeners();
       return true;
     } catch (e) {
-      error = e.toString();
+      error = _friendlyError(e);
       isSaving = false;
       notifyListeners();
       return false;
@@ -343,8 +371,11 @@ class ClientProfileController extends ChangeNotifier {
   }
 
   Future<void> logout(BuildContext context) async {
-    final messagingController = MessagingController();
-    await messagingController.clearToken();
+    // خطوة تنظيف ثانوية (إشعارات)؛ فشلها ما يفترض يمنع تسجيل الخروج.
+    try {
+      final messagingController = MessagingController();
+      await messagingController.clearToken();
+    } catch (_) {}
     await _auth.signOut();
     if (!context.mounted) return;
     Navigator.pushNamedAndRemoveUntil(context, '/login', (_) => false);

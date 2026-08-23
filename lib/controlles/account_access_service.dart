@@ -50,6 +50,32 @@ class AccountAccessService {
     });
   }
 
+  // Live version of loadAccessState(), used by the app-wide blocked gate
+  // so it has both isBlocked and accountType together from the same
+  // snapshot, letting it single-handedly own the blocked <-> unblocked
+  // transition instead of racing with any other listener.
+  Stream<AccountAccessState> watchAccessState({required String uid}) {
+    final trimmedUid = uid.trim();
+    if (trimmedUid.isEmpty) {
+      return Stream<AccountAccessState>.value(
+        const AccountAccessState(accountType: '', isBlocked: false),
+      );
+    }
+
+    return _firestore.collection('users').doc(trimmedUid).snapshots().map((
+      snapshot,
+    ) {
+      final userData = snapshot.data() ?? <String, dynamic>{};
+      return AccountAccessState(
+        accountType: (userData['accountType'] ?? '')
+            .toString()
+            .trim()
+            .toLowerCase(),
+        isBlocked: userData['isBlocked'] == true,
+      );
+    });
+  }
+
   Future<bool> isCurrentUserBlocked() async {
     final uid = (_auth.currentUser?.uid ?? '').trim();
     if (uid.isEmpty) return false;

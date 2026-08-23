@@ -36,6 +36,11 @@ class GeneratedContract {
   final String terminationApprovedAt;
   final List<String> deletedBy;
   final List<String> summary;
+  final int milestonesPaidCount;
+  final int milestonesTotalCount;
+  final bool clientHasSignature;
+  final bool freelancerHasSignature;
+  final String signedAtText;
 
   const GeneratedContract({
     required this.contractId,
@@ -71,6 +76,11 @@ class GeneratedContract {
     required this.terminationApprovedAt,
     required this.deletedBy,
     required this.summary,
+    this.milestonesPaidCount = 0,
+    this.milestonesTotalCount = 0,
+    this.clientHasSignature = false,
+    this.freelancerHasSignature = false,
+    this.signedAtText = '',
   });
 
   factory GeneratedContract.fromRequest({
@@ -145,6 +155,31 @@ class GeneratedContract {
       requestData['description'],
     ]);
 
+    final signatures = _asMap(contractData['signatures']);
+    final clientHasSignature = _stringValue(
+      signatures['clientSignature'],
+    ).trim().isNotEmpty;
+    final freelancerHasSignature = _stringValue(
+      signatures['freelancerSignature'],
+    ).trim().isNotEmpty;
+    final signedAtText = _formatReadableDateTime(
+      _stringValue(meta['approvedAt']),
+    );
+
+    final rawMilestones = contractData['milestones'];
+    final milestonesTotalCount = rawMilestones is List
+        ? rawMilestones.length
+        : 0;
+    final milestonesPaidCount = rawMilestones is List
+        ? rawMilestones
+              .where(
+                (item) =>
+                    _asMap(item)['status'].toString().trim().toLowerCase() ==
+                    'paid',
+              )
+              .length
+        : 0;
+
     return GeneratedContract(
       contractId: _firstFilled([
         contractData['contractId'],
@@ -201,6 +236,11 @@ class GeneratedContract {
       ),
       deletedBy: deletedBy,
       summary: summary,
+      milestonesPaidCount: milestonesPaidCount,
+      milestonesTotalCount: milestonesTotalCount,
+      clientHasSignature: clientHasSignature,
+      freelancerHasSignature: freelancerHasSignature,
+      signedAtText: signedAtText,
     );
   }
 
@@ -309,6 +349,15 @@ class GeneratedContract {
     if (amount.isEmpty) return '-';
     if (currency.isEmpty) return amount;
     return '$amount $currency';
+  }
+
+  /// "2 of 3 milestones paid" for contracts on the 30/40/30 payment
+  /// schedule, or '' for contracts generated before that schedule shipped
+  /// (no `milestones` array at all) — those keep the single lump-sum flow
+  /// and have nothing milestone-related to show here.
+  String get milestoneProgressLabel {
+    if (milestonesTotalCount == 0) return '';
+    return '$milestonesPaidCount of $milestonesTotalCount milestones paid';
   }
 
   String get approvalStatusLabel {

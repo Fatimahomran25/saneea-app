@@ -122,6 +122,7 @@ def approve_contract_api():
         role = data.get("role", "")
         termination_mode = data.get("terminationMode", "")
         signature_data = data.get("signatureData", "")
+        proposal_id = data.get("proposalId", "")
 
         if not request_id:
             return jsonify({
@@ -135,7 +136,7 @@ def approve_contract_api():
                 "error": "role is required"
             }), 400
 
-        result = approve_contract(request_id, role, signature_data)
+        result = approve_contract(request_id, role, signature_data, proposal_id)
         status_code = 200 if result.get("success") else 404
         return jsonify(result), status_code
 
@@ -159,6 +160,7 @@ def request_termination_api():
         request_id = data.get("requestId", "")
         role = data.get("role", "")
         termination_mode = data.get("terminationMode", "")
+        proposal_id = data.get("proposalId", "")
 
         if not request_id:
             return jsonify({
@@ -172,7 +174,7 @@ def request_termination_api():
                 "error": "role is required"
             }), 400
 
-        result = request_termination(request_id, role, termination_mode)
+        result = request_termination(request_id, role, termination_mode, proposal_id)
         status_code = 200 if result.get("success") else 400
         return jsonify(result), status_code
 
@@ -195,6 +197,7 @@ def approve_termination_api():
         data = request.get_json(force=True)
         request_id = data.get("requestId", "")
         role = data.get("role", "")
+        proposal_id = data.get("proposalId", "")
 
         if not request_id:
             return jsonify({
@@ -208,7 +211,7 @@ def approve_termination_api():
                 "error": "role is required"
             }), 400
 
-        result = approve_termination(request_id, role)
+        result = approve_termination(request_id, role, proposal_id)
         status_code = 200 if result.get("success") else 400
         return jsonify(result), status_code
 
@@ -231,6 +234,7 @@ def reject_termination_api():
         data = request.get_json(force=True)
         request_id = data.get("requestId", "")
         role = data.get("role", "")
+        proposal_id = data.get("proposalId", "")
 
         if not request_id:
             return jsonify({
@@ -244,7 +248,7 @@ def reject_termination_api():
                 "error": "role is required"
             }), 400
 
-        result = reject_termination(request_id, role)
+        result = reject_termination(request_id, role, proposal_id)
         status_code = 200 if result.get("success") else 400
         return jsonify(result), status_code
 
@@ -267,6 +271,7 @@ def cancel_termination_api():
         data = request.get_json(force=True)
         request_id = data.get("requestId", "")
         role = data.get("role", "")
+        proposal_id = data.get("proposalId", "")
 
         if not request_id:
             return jsonify({
@@ -280,7 +285,7 @@ def cancel_termination_api():
                 "error": "role is required"
             }), 400
 
-        result = cancel_termination(request_id, role)
+        result = cancel_termination(request_id, role, proposal_id)
         status_code = 200 if result.get("success") else 400
         return jsonify(result), status_code
 
@@ -303,6 +308,7 @@ def cancel_approval_api():
         data = request.get_json(force=True)
         request_id = data.get("requestId", "")
         role = data.get("role", "")
+        proposal_id = data.get("proposalId", "")
 
         if not request_id:
             return jsonify({
@@ -316,7 +322,7 @@ def cancel_approval_api():
                 "error": "role is required"
             }), 400
 
-        result = cancel_approval(request_id, role)
+        result = cancel_approval(request_id, role, proposal_id)
         status_code = 200 if result.get("success") else 400
         return jsonify(result), status_code
 
@@ -333,6 +339,7 @@ def disapprove_contract_api():
         data = request.get_json(force=True)
         request_id = data.get("requestId", "")
         role = data.get("role", "")
+        proposal_id = data.get("proposalId", "")
 
         if not request_id:
             return jsonify({
@@ -346,7 +353,7 @@ def disapprove_contract_api():
                 "error": "role is required"
             }), 400
 
-        result = disapprove_contract(request_id, role)
+        result = disapprove_contract(request_id, role, proposal_id)
         status_code = 200 if result.get("success") else 404
         return jsonify(result), status_code
 
@@ -369,6 +376,7 @@ def cancel_contract_api():
         data = request.get_json(force=True)
         request_id = data.get("requestId", "")
         role = data.get("role", "")
+        proposal_id = data.get("proposalId", "")
 
         if not request_id:
             return jsonify({
@@ -376,7 +384,7 @@ def cancel_contract_api():
                 "error": "requestId is required"
             }), 400
 
-        result = cancel_contract(request_id, role)
+        result = cancel_contract(request_id, role, proposal_id)
         status_code = 200 if result.get("success") else 400
         return jsonify(result), status_code
 
@@ -424,6 +432,7 @@ def delete_contract_api():
     try:
         data = request.get_json(force=True)
         request_id = data.get("requestId", "")
+        proposal_id = data.get("proposalId", "")
 
         if not request_id:
             return jsonify({
@@ -431,7 +440,7 @@ def delete_contract_api():
                 "error": "requestId is required"
             }), 400
 
-        result = delete_contract(request_id)
+        result = delete_contract(request_id, proposal_id)
         status_code = 200 if result.get("success") else 404
         return jsonify(result), status_code
 
@@ -516,6 +525,7 @@ def verify_payment_api():
         payment_id = str(data.get("paymentId", "")).strip()
         request_id = str(data.get("requestId", "")).strip()
         paid_by = str(data.get("paidBy", "")).strip()
+        raw_milestone_index = data.get("milestoneIndex")
 
         if not payment_id:
             return jsonify({"success": False, "error": "paymentId is required"}), 400
@@ -558,31 +568,143 @@ def verify_payment_api():
             }), 400
 
         updated_contract_data = dict(contract_data)
-        updated_payment_data = dict(updated_contract_data.get("paymentData") or {})
-        updated_delivery_data = dict(updated_contract_data.get("deliveryData") or {})
         updated_progress_data = dict(updated_contract_data.get("progressData") or {})
         updated_approval_data = dict(updated_contract_data.get("approval") or {})
         now_iso = datetime.now().isoformat()
 
-        updated_payment_data.update({
-            "paymentStatus": "paid",
-            "paymentCompleted": True,
-            "paymentCompletedAt": now_iso,
-            "transactionId": payment.get("id"),
-            "paidAt": now_iso,
-            "paidBy": paid_by,
-            "amount": payment.get("amount"),
-        })
-        updated_delivery_data["status"] = "paid_delivered"
-        updated_progress_data["stage"] = "completed"
-        updated_progress_data["updatedAt"] = now_iso
-        updated_progress_data["updatedBy"] = "system"
-        updated_approval_data["contractStatus"] = "completed"
+        existing_milestones = updated_contract_data.get("milestones")
+        milestones = (
+            [dict(m) if isinstance(m, dict) else {} for m in existing_milestones]
+            if isinstance(existing_milestones, list)
+            else []
+        )
 
-        updated_contract_data["paymentData"] = updated_payment_data
-        updated_contract_data["deliveryData"] = updated_delivery_data
-        updated_contract_data["progressData"] = updated_progress_data
-        updated_contract_data["approval"] = updated_approval_data
+        if milestones:
+            # Milestone-aware contract: this payment settles exactly one
+            # milestone, not the whole contract.
+            try:
+                milestone_index = int(raw_milestone_index)
+            except (TypeError, ValueError):
+                return jsonify({
+                    "success": False,
+                    "error": "milestoneIndex is required for this contract"
+                }), 400
+
+            if not (0 <= milestone_index < len(milestones)):
+                return jsonify({
+                    "success": False,
+                    "error": "milestoneIndex is invalid"
+                }), 400
+
+            target_milestone = milestones[milestone_index]
+            target_status = str(target_milestone.get("status", "")).strip().lower()
+            # Milestones with no deliverable (e.g. milestone 0, paid on
+            # signing) become payable as soon as they are "pending" — they
+            # never go through submit/approve, so they never reach
+            # "approved". Only delivery-bearing milestones require that.
+            delivery_required = target_milestone.get("deliveryRequired", True)
+            expected_status = "pending" if delivery_required is False else "approved"
+            if target_status != expected_status:
+                return jsonify({
+                    "success": False,
+                    "error": "This milestone is not ready for payment"
+                }), 400
+
+            if milestone_index > 0:
+                previous_status = str(
+                    milestones[milestone_index - 1].get("status", "")
+                ).strip().lower()
+                if previous_status != "paid":
+                    return jsonify({
+                        "success": False,
+                        "error": "A previous milestone has not been paid yet"
+                    }), 400
+
+            target_payment_data = dict(target_milestone.get("paymentData") or {})
+            target_payment_data.update({
+                "paymentStatus": "paid",
+                "paymentCompleted": True,
+                "paymentCompletedAt": now_iso,
+                "transactionId": payment.get("id"),
+                "paidAt": now_iso,
+                "paidBy": paid_by,
+                "amount": payment.get("amount"),
+            })
+            target_delivery_data = dict(target_milestone.get("deliveryData") or {})
+            target_delivery_data["status"] = "paid_delivered"
+
+            target_milestone["paymentData"] = target_payment_data
+            target_milestone["deliveryData"] = target_delivery_data
+            target_milestone["status"] = "paid"
+            milestones[milestone_index] = target_milestone
+
+            is_last_milestone = milestone_index == len(milestones) - 1
+            if not is_last_milestone:
+                next_milestone = dict(milestones[milestone_index + 1])
+                if str(next_milestone.get("status", "")).strip().lower() == "locked":
+                    next_milestone["status"] = "pending"
+                milestones[milestone_index + 1] = next_milestone
+
+            updated_contract_data["milestones"] = milestones
+
+            # Mirror the flat legacy fields so any reader that hasn't been
+            # migrated to the milestones array still sees "what's currently
+            # actionable" instead of stale data. For the last milestone that
+            # IS the just-paid milestone (the whole contract is now done).
+            # For any earlier milestone, the newly-unlocked NEXT milestone
+            # is what's now current — mirroring the just-paid milestone's
+            # "paid"/"paid_delivered" state here would make legacy readers
+            # (e.g. any completion badge still keyed off the flat fields)
+            # think the whole contract is finished after just one payment.
+            if is_last_milestone:
+                updated_contract_data["paymentData"] = target_payment_data
+                updated_contract_data["deliveryData"] = target_delivery_data
+            else:
+                updated_contract_data["paymentData"] = dict(
+                    milestones[milestone_index + 1].get("paymentData") or {}
+                )
+                updated_contract_data["deliveryData"] = dict(
+                    milestones[milestone_index + 1].get("deliveryData") or {}
+                )
+            updated_progress_data["stage"] = "completed" if is_last_milestone else "started"
+            updated_progress_data["updatedAt"] = now_iso
+            updated_progress_data["updatedBy"] = "system"
+            updated_contract_data["progressData"] = updated_progress_data
+
+            if is_last_milestone:
+                updated_approval_data["contractStatus"] = "completed"
+            updated_contract_data["approval"] = updated_approval_data
+
+            response_payment_status = "paid"
+            response_delivery_status = "paid_delivered"
+        else:
+            # Legacy contract with no milestone schedule — unchanged
+            # single-payment, all-or-nothing behavior.
+            updated_payment_data = dict(updated_contract_data.get("paymentData") or {})
+            updated_delivery_data = dict(updated_contract_data.get("deliveryData") or {})
+
+            updated_payment_data.update({
+                "paymentStatus": "paid",
+                "paymentCompleted": True,
+                "paymentCompletedAt": now_iso,
+                "transactionId": payment.get("id"),
+                "paidAt": now_iso,
+                "paidBy": paid_by,
+                "amount": payment.get("amount"),
+            })
+            updated_delivery_data["status"] = "paid_delivered"
+            updated_progress_data["stage"] = "completed"
+            updated_progress_data["updatedAt"] = now_iso
+            updated_progress_data["updatedBy"] = "system"
+            updated_approval_data["contractStatus"] = "completed"
+
+            updated_contract_data["paymentData"] = updated_payment_data
+            updated_contract_data["deliveryData"] = updated_delivery_data
+            updated_contract_data["progressData"] = updated_progress_data
+            updated_contract_data["approval"] = updated_approval_data
+
+            response_payment_status = "paid"
+            response_delivery_status = "paid_delivered"
 
         if source == "request":
             update_request_contract_data(request_id, updated_contract_data)
@@ -610,8 +732,8 @@ def verify_payment_api():
 
         return jsonify({
             "success": True,
-            "paymentStatus": "paid",
-            "deliveryStatus": "paid_delivered",
+            "paymentStatus": response_payment_status,
+            "deliveryStatus": response_delivery_status,
             "contractData": updated_contract_data,
         }), 200
 

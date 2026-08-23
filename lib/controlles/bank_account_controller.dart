@@ -1,9 +1,34 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../models/bank_account_model.dart';
+
+// يحوّل أخطاء Firebase التقنية الخام إلى رسالة مفهومة للمستخدم، بدل
+// عرض النص التقني الخام.
+String _friendlyError(Object e) {
+  if (e is FirebaseException) {
+    switch (e.code) {
+      case 'quota-exceeded':
+        return "We're experiencing high demand right now. Please try again later.";
+      case 'unauthorized':
+      case 'permission-denied':
+        return "You don't have permission to do this.";
+      case 'unauthenticated':
+        return "Please log in again and try.";
+      case 'network-request-failed':
+      case 'unavailable':
+        return "Network error. Please check your connection and try again.";
+      case 'canceled':
+        return "Upload was canceled.";
+      default:
+        return "Something went wrong. Please try again.";
+    }
+  }
+  return "Something went wrong. Please try again.";
+}
 
 class BankAccountController extends ChangeNotifier {
   final _auth = FirebaseAuth.instance;
@@ -62,7 +87,7 @@ class BankAccountController extends ChangeNotifier {
       isLoading = false;
       notifyListeners();
     } catch (e) {
-      error = e.toString();
+      error = _friendlyError(e);
       isLoading = false;
       notifyListeners();
     }
@@ -161,7 +186,7 @@ class BankAccountController extends ChangeNotifier {
       notifyListeners();
       return true;
     } catch (e) {
-      error = e.toString();
+      error = _friendlyError(e);
       debugPrint("SAVE ERROR: $e");
       isSaving = false;
       notifyListeners();
@@ -206,7 +231,7 @@ class BankAccountController extends ChangeNotifier {
       notifyListeners();
       return true;
     } catch (e) {
-      error = e.toString();
+      error = _friendlyError(e);
       debugPrint("DELETE ERROR: $e");
       isSaving = false;
       notifyListeners();

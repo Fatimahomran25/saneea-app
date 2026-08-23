@@ -141,8 +141,11 @@ class LoginController {
   }
 
   Future<void> logout() async {
-    final messagingController = MessagingController();
-    await messagingController.clearToken();
+    // خطوة تنظيف ثانوية (إشعارات)؛ فشلها ما يفترض يمنع تسجيل الخروج.
+    try {
+      final messagingController = MessagingController();
+      await messagingController.clearToken();
+    } catch (_) {}
     await FirebaseAuth.instance.signOut();
   }
 }

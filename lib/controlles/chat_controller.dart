@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'dart:typed_data';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -6,6 +6,33 @@ import '../models/chat_model.dart';
 import '../models/message_model.dart';
 
 import 'account_access_service.dart';
+
+// A picked image's raw bytes plus its real MIME type (from image_picker's
+// XFile.mimeType). Storage's putData() never sniffs content type on its
+// own, and image_picker on web can return any format the user picked
+// (PNG, WEBP, HEIC...) — trusting it instead of assuming JPEG everywhere
+// keeps the uploaded content type in sync with the actual bytes so
+// Flutter's image decoder (CanvasKit) can read it back correctly.
+typedef PickedImageData = ({Uint8List bytes, String mimeType});
+
+String _extensionForImageMimeType(String mimeType) {
+  switch (mimeType.toLowerCase().trim()) {
+    case 'image/png':
+      return 'png';
+    case 'image/webp':
+      return 'webp';
+    case 'image/gif':
+      return 'gif';
+    case 'image/heic':
+      return 'heic';
+    case 'image/heif':
+      return 'heif';
+    case 'image/jpeg':
+    case 'image/jpg':
+    default:
+      return 'jpg';
+  }
+}
 
 class ChatController {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -19,7 +46,7 @@ class ChatController {
 
   Future<void> sendImageMessage({
     required String chatId,
-    required File imageFile,
+    required PickedImageData image,
   }) async {
     await _accountAccessService.ensureCurrentUserNotBlocked();
 
@@ -29,13 +56,17 @@ class ChatController {
     }
 
     final fileName = DateTime.now().millisecondsSinceEpoch.toString();
+    final extension = _extensionForImageMimeType(image.mimeType);
     final storageRef = _storage
         .ref()
         .child('chat_images')
         .child(chatId)
-        .child('$fileName.jpg');
+        .child('$fileName.$extension');
 
-    await storageRef.putFile(imageFile);
+    await storageRef.putData(
+      image.bytes,
+      SettableMetadata(contentType: image.mimeType),
+    );
     final imageUrl = await storageRef.getDownloadURL();
 
     final chatRef = _firestore.collection(_chatCollection).doc(chatId);
@@ -232,8 +263,19 @@ class ChatController {
     final proposalData = proposalDoc.data() ?? <String, dynamic>{};
     final storedChatId = (proposalData['chatId'] ?? '').toString().trim();
 
+    // A chat for this same announcement/request can already exist under the
+    // requestId-based flow (createOrGetChat/createChatForRequest, or the
+    // contract endpoints, which all key the chat doc by requestId). Without
+    // this check we'd blindly default to a proposalId-keyed doc below and
+    // end up with two separate chat threads for the same two people.
+    final existingRequestChatId = normalizedInitialChatId.isEmpty
+        ? await getExistingChatIdForRequest(normalizedAnnouncementId)
+        : null;
+
     final chatId = normalizedInitialChatId.isNotEmpty
         ? normalizedInitialChatId
+        : (existingRequestChatId != null && existingRequestChatId.isNotEmpty)
+        ? existingRequestChatId
         : storedChatId.isNotEmpty
         ? storedChatId
         : normalizedProposalId;
@@ -268,7 +310,7 @@ class ChatController {
   Future<void> sendCombinedMessage({
     required String chatId,
     required String text,
-    required List<File> imageFiles,
+    required List<PickedImageData> images,
   }) async {
     await _accountAccessService.ensureCurrentUserNotBlocked();
 
@@ -299,18 +341,22 @@ class ChatController {
 
     final List<String> imageUrls = [];
 
-    for (final imageFile in imageFiles) {
+    for (final image in images) {
       final fileName =
           DateTime.now().millisecondsSinceEpoch.toString() +
           '_${imageUrls.length}';
+      final extension = _extensionForImageMimeType(image.mimeType);
 
       final storageRef = _storage
           .ref()
           .child('chat_images')
           .child(chatId)
-          .child('$fileName.jpg');
+          .child('$fileName.$extension');
 
-      await storageRef.putFile(imageFile);
+      await storageRef.putData(
+        image.bytes,
+        SettableMetadata(contentType: image.mimeType),
+      );
       final imageUrl = await storageRef.getDownloadURL();
       imageUrls.add(imageUrl);
     }
@@ -347,7 +393,7 @@ class ChatController {
 
   Future<List<Map<String, String>>> uploadDeliveryImages({
     required String chatId,
-    required List<File> imageFiles,
+    required List<PickedImageData> images,
   }) async {
     await _accountAccessService.ensureCurrentUserNotBlocked();
 
@@ -358,27 +404,29 @@ class ChatController {
 
     final List<Map<String, String>> imageItems = [];
 
-    for (final imageFile in imageFiles) {
+    for (final image in images) {
       final fileName =
           '${DateTime.now().millisecondsSinceEpoch}_${imageItems.length}';
+      final extension = _extensionForImageMimeType(image.mimeType);
       final previewRef = _storage
           .ref()
           .child('delivery_previews')
           .child(chatId)
-          .child('$fileName.jpg');
+          .child('$fileName.$extension');
       final storageRef = _storage
           .ref()
           .child('delivery_files')
           .child(chatId)
-          .child('$fileName.jpg');
+          .child('$fileName.$extension');
 
-      await previewRef.putFile(imageFile);
-      await storageRef.putFile(imageFile);
+      final imageMetadata = SettableMetadata(contentType: image.mimeType);
+      await previewRef.putData(image.bytes, imageMetadata);
+      await storageRef.putData(image.bytes, imageMetadata);
       final previewUrl = await previewRef.getDownloadURL();
       final fileUrl = await storageRef.getDownloadURL();
 
       imageItems.add({
-        'fileName': '$fileName.jpg',
+        'fileName': '$fileName.$extension',
         'url': fileUrl,
         'previewUrl': previewUrl,
         'storagePath': storageRef.fullPath,
@@ -390,7 +438,7 @@ class ChatController {
 
   Future<Map<String, String>> uploadDeliveryFile({
     required String chatId,
-    required File file,
+    required Uint8List fileBytes,
     required String fileName,
   }) async {
     await _accountAccessService.ensureCurrentUserNotBlocked();
@@ -409,7 +457,10 @@ class ChatController {
         .child(chatId)
         .child('${DateTime.now().millisecondsSinceEpoch}_$normalizedName');
 
-    await storageRef.putFile(file);
+    await storageRef.putData(
+      fileBytes,
+      SettableMetadata(contentType: _contentTypeForFileName(normalizedName)),
+    );
     final fileUrl = await storageRef.getDownloadURL();
     return {
       'name': normalizedName,
@@ -743,5 +794,50 @@ class ChatController {
     }
 
     return (chatData['lastMessage'] ?? '').toString();
+  }
+}
+
+// Firebase Storage's putData() (unlike putFile()) never guesses a
+// Content-Type from the file itself, so without this every upload would be
+// served as application/octet-stream — which browsers refuse to render as
+// an image and often force-download instead of previewing. Mapped by
+// extension since delivery attachments can be any common document type.
+String _contentTypeForFileName(String fileName) {
+  final extension = fileName.contains('.')
+      ? fileName.split('.').last.toLowerCase()
+      : '';
+
+  switch (extension) {
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'png':
+      return 'image/png';
+    case 'gif':
+      return 'image/gif';
+    case 'webp':
+      return 'image/webp';
+    case 'pdf':
+      return 'application/pdf';
+    case 'doc':
+      return 'application/msword';
+    case 'docx':
+      return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    case 'xls':
+      return 'application/vnd.ms-excel';
+    case 'xlsx':
+      return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    case 'ppt':
+      return 'application/vnd.ms-powerpoint';
+    case 'pptx':
+      return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+    case 'txt':
+      return 'text/plain';
+    case 'csv':
+      return 'text/csv';
+    case 'zip':
+      return 'application/zip';
+    default:
+      return 'application/octet-stream';
   }
 }

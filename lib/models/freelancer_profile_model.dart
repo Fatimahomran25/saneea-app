@@ -7,7 +7,16 @@ class FreelancerProfileModel {
   final String lastName;
 
   String get fullName {
-    final both = ('$firstName $lastName').trim();
+    // نكبّر أول حرف من كل كلمة عند العرض (حتى لو محفوظ بقاعدة
+    // البيانات بأحرف صغيرة من تسجيلات قديمة)، عشان يبين متناسق بكل
+    // مكان يظهر فيه الاسم بالتطبيق.
+    String cap(String s) => s.isEmpty
+        ? s
+        : s
+              .split(' ')
+              .map((w) => w.isEmpty ? w : w[0].toUpperCase() + w.substring(1))
+              .join(' ');
+    final both = ('${cap(firstName)} ${cap(lastName)}').trim();
     return both.isEmpty ? "Freelancer" : both;
   }
 

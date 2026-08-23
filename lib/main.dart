@@ -771,7 +771,7 @@ class _LoadingScreen extends StatelessWidget {
   }
 }
 
-class _BlockedUserGate extends StatelessWidget {
+class _BlockedUserGate extends StatefulWidget {
   const _BlockedUserGate({
     required this.accountAccessService,
     required this.child,
@@ -781,26 +781,69 @@ class _BlockedUserGate extends StatelessWidget {
   final Widget child;
 
   @override
+  State<_BlockedUserGate> createState() => _BlockedUserGateState();
+}
+
+class _BlockedUserGateState extends State<_BlockedUserGate> {
+  // Tracks the previously-seen blocked value so we can detect an actual
+  // blocked -> unblocked *transition* (as opposed to the initial value)
+  // and react to it exactly once. This gate is the single place that
+  // owns navigating away from BlockedAccountView when an admin lifts a
+  // restriction — BlockedAccountView itself no longer tries to redirect
+  // on its own, which used to race with this gate and could leave the
+  // app stuck on a stale "restricted"/loading screen until a manual
+  // page reload.
+  bool? _lastIsBlocked;
+
+  String _homeRouteForAccountType(String accountType) {
+    final normalized = accountType.trim().toLowerCase();
+    if (normalized == 'admin') return '/adminHome';
+    if (normalized == 'client') return '/clientHome';
+    return '/freelancerHome';
+  }
+
+  void _handleAccessState(AccountAccessState state) {
+    final wasBlocked = _lastIsBlocked;
+    _lastIsBlocked = state.isBlocked;
+
+    if (wasBlocked == true && state.isBlocked == false) {
+      final targetRoute = _homeRouteForAccountType(state.accountType);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        navigatorKey.currentState?.pushNamedAndRemoveUntil(
+          targetRoute,
+          (route) => false,
+        );
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     return StreamBuilder<User?>(
       stream: FirebaseAuth.instance.authStateChanges(),
       initialData: FirebaseAuth.instance.currentUser,
       builder: (context, authSnapshot) {
         final user = authSnapshot.data;
-        if (user == null) return child;
+        if (user == null) {
+          _lastIsBlocked = null;
+          return widget.child;
+        }
 
-        return StreamBuilder<bool>(
-          stream: accountAccessService.watchBlockedState(uid: user.uid),
-          builder: (context, blockedSnapshot) {
-            if (blockedSnapshot.hasError) {
-              return child;
+        return StreamBuilder<AccountAccessState>(
+          stream: widget.accountAccessService.watchAccessState(uid: user.uid),
+          builder: (context, accessSnapshot) {
+            final state = accessSnapshot.data;
+            if (accessSnapshot.hasError || state == null) {
+              return widget.child;
             }
 
-            if (blockedSnapshot.data == true) {
+            _handleAccessState(state);
+
+            if (state.isBlocked) {
               return const BlockedAccountView();
             }
 
-            return child;
+            return widget.child;
           },
         );
       },

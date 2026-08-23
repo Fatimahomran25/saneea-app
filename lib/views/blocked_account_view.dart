@@ -31,7 +31,6 @@ class _BlockedAccountViewState extends State<BlockedAccountView> {
   bool _isLoggingOut = false;
   bool _isAppealFormOpen = false;
   bool _isSubmittingAppeal = false;
-  bool _isRedirectingToHome = false;
 
   @override
   void dispose() {
@@ -91,27 +90,6 @@ class _BlockedAccountViewState extends State<BlockedAccountView> {
     final email = (userData['email'] ?? '').toString().trim();
     if (email.isNotEmpty) return email;
     return (user?.email ?? '').trim();
-  }
-
-  String _homeRouteForAccountType(String accountType) {
-    final normalized = accountType.trim().toLowerCase();
-    if (normalized == 'admin') return '/adminHome';
-    if (normalized == 'client') return '/clientHome';
-    return '/freelancerHome';
-  }
-
-  void _redirectToNormalHome(String accountType) {
-    if (_isRedirectingToHome || !mounted) return;
-
-    _isRedirectingToHome = true;
-    final targetRoute = _homeRouteForAccountType(accountType);
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      Navigator.of(
-        context,
-      ).pushNamedAndRemoveUntil(targetRoute, (route) => false);
-    });
   }
 
   String _appealStatus(Map<String, dynamic> data) {
@@ -249,9 +227,6 @@ class _BlockedAccountViewState extends State<BlockedAccountView> {
         builder: (context, snapshot) {
           final userData = snapshot.data?.data() ?? <String, dynamic>{};
           final isBlocked = userData['isBlocked'] == true;
-          final accountType = (userData['accountType'] ?? '')
-              .toString()
-              .trim();
           final blockedReason = (userData['blockedReason'] ?? '')
               .toString()
               .trim();
@@ -262,8 +237,13 @@ class _BlockedAccountViewState extends State<BlockedAccountView> {
                     .where('userId', isEqualTo: uid)
                     .snapshots();
 
+          // The app-wide _BlockedUserGate (in main.dart) is the single
+          // authority that navigates away from this screen once it sees
+          // isBlocked flip to false — it owns the transition so this
+          // widget doesn't race it with a second redirect. If our own
+          // (slightly less fresh) stream still thinks we're unblocked,
+          // just hold on a loading frame until the gate takes over.
           if (uid != null && snapshot.hasData && !isBlocked) {
-            _redirectToNormalHome(accountType);
             return const Scaffold(
               body: Center(child: CircularProgressIndicator()),
             );

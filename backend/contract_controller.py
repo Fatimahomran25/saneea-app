@@ -6,9 +6,10 @@ from datetime import datetime, timedelta
 
 from firebase_service import (
     create_approved_contract_chat_message,
+    delete_announcement_contract_data,
+    delete_announcement_proposal_contract_data,
     delete_request_contract_data,
     get_contract_source_by_id,
-    get_request_by_id,
     get_termination_grace_period_minutes,
     update_announcement_contract_data,
     update_announcement_proposal_contract_data,
@@ -212,6 +213,22 @@ Announcement-specific instructions:
 - Do not replace the original announcement description with the proposal text.
 """
 
+    payment_schedule_instruction = "Payment Schedule: Not specified — describe payment terms in neutral, general wording."
+    raw_amount = data.get("amount")
+    if raw_amount not in (None, ""):
+        milestone_preview = _build_milestones(raw_amount, data.get("currency"))
+        currency_label = data.get("currency") or ""
+        payment_schedule_instruction = (
+            f"Payment Schedule: {milestone_preview[0]['percentage']}% ("
+            f"{milestone_preview[0]['amount']} {currency_label}) due on contract "
+            f"signing, {milestone_preview[1]['percentage']}% ("
+            f"{milestone_preview[1]['amount']} {currency_label}) due on "
+            f"mid-delivery approval, {milestone_preview[2]['percentage']}% ("
+            f"{milestone_preview[2]['amount']} {currency_label}) due on final "
+            "delivery approval. Describe exactly this schedule — do not invent "
+            "a different split or ratio."
+        )
+
     prompt = f"""
 Create a professional freelance contract draft using these inputs:
 
@@ -223,6 +240,7 @@ Service Type: {data.get('service_type', 'Not specified')}
 Budget: {data.get('amount', 'Not specified')}
 Currency: {data.get('currency', 'Not specified')}
 Deadline: {data.get('deadline', 'Not specified')}
+{payment_schedule_instruction}
 Extra Requirements: {data.get('extra_requirements', 'None')}
 {announcement_context}
 
@@ -231,6 +249,11 @@ Instructions:
 - Keep the language readable for non-lawyers.
 - Do not invent jurisdiction-specific legal claims.
 - Use neutral wording when details are missing.
+- Do not include a "Signatures" section or any manual signature/date blank
+  lines (e.g. "Signature: ____") at the end of the contract. Signing is
+  handled digitally elsewhere in the app, so a printable signature block
+  would be misleading here. End the contract after the last substantive
+  clause instead.
 - Return output strictly matching the JSON schema.
 """
 
@@ -292,6 +315,134 @@ Instructions:
         )
 
     return parsed
+
+
+def _empty_delivery_data():
+    """Fresh, unsubmitted deliverable state — shared by the legacy flat
+    `deliveryData` field and by each milestone's own `deliveryData`, so the
+    shape can never drift between the two."""
+    return {
+        "status": "not_submitted",
+        "previewImageUrls": [],
+        "imageUrls": [],
+        "imageItems": [],
+        "fileItems": [],
+        "finalWorkUrls": [],
+        "fileNames": [],
+        "linkUrls": [],
+        "notes": "",
+        "submittedBy": "",
+        "submittedAt": "",
+        "changesRequestedBy": "",
+        "changesRequestedAt": "",
+        "approvedByClient": False,
+        "approvedBy": "",
+        "approvedAt": "",
+    }
+
+
+def _empty_payment_data():
+    """Fresh, unpaid payment state — shared by the legacy flat `paymentData`
+    field and by each milestone's own `paymentData`."""
+    return {
+        "paymentStatus": "pending",
+        "paymentCompleted": False,
+        "paymentCompletedAt": "",
+        "transactionId": "",
+        "paidAt": "",
+        "paidBy": "",
+        "amount": "",
+    }
+
+
+MILESTONE_1_PERCENTAGE = 10
+MILESTONE_2_PERCENTAGE = 40
+MILESTONE_3_PERCENTAGE = 50
+
+
+def _build_milestones(amount, currency):
+    """Build the 10% / 40% / 50% milestone schedule for a contract's total
+    amount: signing, mid-delivery, final delivery. The remainder of the
+    10/40 split is absorbed into the last milestone so the three amounts
+    always sum exactly to `amount`. Keeps `amount`'s original type (string
+    vs number) since `payment.amount` is a passthrough value read elsewhere
+    without type normalization.
+    """
+    def _to_float(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    total = _to_float(amount)
+    is_string_amount = isinstance(amount, str)
+
+    def _format_amount(value):
+        rounded = round(value, 2)
+        if rounded == int(rounded):
+            rounded = int(rounded)
+        return str(rounded) if is_string_amount else rounded
+
+    if total is None:
+        # Amount couldn't be parsed (missing/invalid) — fall back to
+        # leaving every milestone's amount as whatever was passed in
+        # rather than guessing; the UI already treats an unparsable
+        # amount as invalid (see _openMoyasarPayment's "Invalid payment
+        # amount" guard on the frontend).
+        milestone_amounts = (amount, amount, amount)
+    else:
+        m0 = round(total * (MILESTONE_1_PERCENTAGE / 100), 2)
+        m1 = round(total * (MILESTONE_2_PERCENTAGE / 100), 2)
+        m2 = round(total - m0 - m1, 2)
+        milestone_amounts = (
+            _format_amount(m0),
+            _format_amount(m1),
+            _format_amount(m2),
+        )
+
+    definitions = [
+        {
+            "index": 0,
+            "key": "signing",
+            "label": f"Milestone 1 — Contract Signing ({MILESTONE_1_PERCENTAGE}%)",
+            "percentage": MILESTONE_1_PERCENTAGE,
+            "trigger": "on_signing",
+            "deliveryRequired": False,
+        },
+        {
+            "index": 1,
+            "key": "mid_delivery",
+            "label": f"Milestone 2 — Mid-Delivery ({MILESTONE_2_PERCENTAGE}%)",
+            "percentage": MILESTONE_2_PERCENTAGE,
+            "trigger": "mid_delivery",
+            "deliveryRequired": True,
+        },
+        {
+            "index": 2,
+            "key": "final_delivery",
+            "label": f"Milestone 3 — Final Delivery ({MILESTONE_3_PERCENTAGE}%)",
+            "percentage": MILESTONE_3_PERCENTAGE,
+            "trigger": "final_delivery",
+            "deliveryRequired": True,
+        },
+    ]
+
+    milestones = []
+    for definition, milestone_amount in zip(definitions, milestone_amounts):
+        milestones.append({
+            **definition,
+            "amount": milestone_amount,
+            "currency": currency,
+            # Every milestone starts locked; milestone 0 unlocks (locked ->
+            # pending) once both parties approve the contract (see
+            # approve_contract), and milestones 1/2 unlock once the
+            # previous milestone is paid (see the /verify-payment route).
+            "status": "locked",
+            "deliveryData": _empty_delivery_data(),
+            "paymentData": _empty_payment_data(),
+        })
+
+    return milestones
 
 
 def generate_contract_from_data(request_data):
@@ -362,15 +513,12 @@ def generate_contract_from_data(request_data):
                 "amount": request_data.get("amount") or request_data.get("budget"),
                 "currency": request_data.get("currency"),
             },
-            "paymentData": {
-                "paymentStatus": "pending",
-                "paymentCompleted": False,
-                "paymentCompletedAt": "",
-                "transactionId": "",
-                "paidAt": "",
-                "paidBy": "",
-                "amount": "",
-            },
+            "paymentData": _empty_payment_data(),
+            "milestones": _build_milestones(
+                request_data.get("amount") or request_data.get("budget"),
+                request_data.get("currency"),
+            ),
+            "milestoneSchemaVersion": 2,
             "timeline": {
                 "deadline": request_data.get("deadline"),
             },
@@ -379,24 +527,7 @@ def generate_contract_from_data(request_data):
                 "updatedAt": created_at.isoformat(),
                 "updatedBy": "",
             },
-            "deliveryData": {
-                "status": "not_submitted",
-                "previewImageUrls": [],
-                "imageUrls": [],
-                "imageItems": [],
-                "fileItems": [],
-                "finalWorkUrls": [],
-                "fileNames": [],
-                "linkUrls": [],
-                "notes": "",
-                "submittedBy": "",
-                "submittedAt": "",
-                "changesRequestedBy": "",
-                "changesRequestedAt": "",
-                "approvedByClient": False,
-                "approvedBy": "",
-                "approvedAt": "",
-            },
+            "deliveryData": _empty_delivery_data(),
             "adminReview": {
                 "status": "none",
                 "requestedBy": "",
@@ -464,6 +595,47 @@ def generate_contract_from_request_id(request_id, proposal_id=None):
 
     result["requestData"] = request_data
     return result
+
+
+def _load_contract_source(request_id, proposal_id=""):
+    # Contracts can live in one of two places depending on how the
+    # freelancer was hired: the direct "requests" collection, or (when the
+    # chat came from a client's public announcement + accepted proposal)
+    # the "announcement_requests" collection. get_contract_source_by_id
+    # checks both, the same way generate_contract_from_request_id does, so
+    # every action on an existing contract can find it regardless of which
+    # hiring flow created it.
+    return get_contract_source_by_id(request_id, proposal_id)
+
+
+def _save_contract_source_data(contract_source, request_id, proposal_id, contract_data):
+    # Mirrors update_contract()'s save logic so approve/reject/cancel/
+    # termination actions write back to wherever the contract actually
+    # came from instead of always assuming the "requests" collection.
+    if contract_source.get("source") == "announcement":
+        normalized_proposal_id = str(
+            contract_source.get("proposalId") or proposal_id or ""
+        ).strip()
+        if not normalized_proposal_id:
+            raise ValueError("proposalId is required for announcement contracts")
+
+        update_announcement_proposal_contract_data(
+            normalized_proposal_id,
+            contract_data,
+        )
+
+        client_id = str(contract_source.get("clientId") or "").strip()
+        announcement_id = str(
+            contract_source.get("announcementId") or request_id or ""
+        ).strip()
+        if client_id and announcement_id:
+            update_announcement_contract_data(
+                client_id,
+                announcement_id,
+                contract_data,
+            )
+    else:
+        update_request_contract_data(request_id, contract_data)
 
 
 def _normalize_signatures(signatures):
@@ -542,7 +714,7 @@ def _normalize_custom_clauses(raw_clauses, existing_clauses):
     return normalized_clauses
 
 
-def approve_contract(request_id, role, signature_data):
+def approve_contract(request_id, role, signature_data, proposal_id=""):
     normalized_role = (role or "").strip().lower()
     normalized_signature_data = (
         signature_data.strip() if isinstance(signature_data, str) else ""
@@ -556,14 +728,15 @@ def approve_contract(request_id, role, signature_data):
 
     print("🔥 APPROVE HIT", request_id, normalized_role)
 
-    request_data = get_request_by_id(request_id)
+    contract_source = _load_contract_source(request_id, proposal_id)
 
-    if not request_data:
+    if not contract_source:
         return {
             "success": False,
             "error": "Request not found"
         }
 
+    request_data = contract_source.get("data") or {}
     contract_data = request_data.get("contractData")
     if not isinstance(contract_data, dict):
         generated = generate_contract_from_data(request_data)
@@ -608,12 +781,24 @@ def approve_contract(request_id, role, signature_data):
             meta = {}
         meta["approvedAt"] = approved_at
         contract_data["meta"] = meta
+
+        # Milestone 1 ("on signing") becomes payable the moment both
+        # parties approve — everything else stays locked until the
+        # previous milestone is paid (see the /verify-payment route).
+        milestones = contract_data.get("milestones")
+        if isinstance(milestones, list) and milestones:
+            first_milestone = dict(milestones[0])
+            if str(first_milestone.get("status", "")).strip().lower() == "locked":
+                first_milestone["status"] = "pending"
+                milestones = list(milestones)
+                milestones[0] = first_milestone
+                contract_data["milestones"] = milestones
     else:
         approval["contractStatus"] = "pending_approval"
 
     contract_data["approval"] = approval
     contract_data["signatures"] = signatures
-    update_request_contract_data(request_id, contract_data)
+    _save_contract_source_data(contract_source, request_id, proposal_id, contract_data)
 
     contract_text = render_contract_text(contract_data)
 
@@ -637,17 +822,18 @@ def approve_contract(request_id, role, signature_data):
     }
 
 
-def cancel_approval(request_id, role):
+def cancel_approval(request_id, role, proposal_id=""):
     normalized_role = (role or "").strip().lower()
 
-    request_data = get_request_by_id(request_id)
+    contract_source = _load_contract_source(request_id, proposal_id)
 
-    if not request_data:
+    if not contract_source:
         return {
             "success": False,
             "error": "Request not found"
         }
 
+    request_data = contract_source.get("data") or {}
     contract_data = request_data.get("contractData")
     if not isinstance(contract_data, dict):
         return {
@@ -693,7 +879,7 @@ def cancel_approval(request_id, role):
 
     contract_data["approval"] = approval
     contract_data["signatures"] = signatures
-    update_request_contract_data(request_id, contract_data)
+    _save_contract_source_data(contract_source, request_id, proposal_id, contract_data)
 
     return {
         "success": True,
@@ -702,7 +888,7 @@ def cancel_approval(request_id, role):
     }
 
 
-def disapprove_contract(request_id, role):
+def disapprove_contract(request_id, role, proposal_id=""):
     normalized_role = (role or "").strip().lower()
 
     if normalized_role not in ("client", "freelancer"):
@@ -710,14 +896,15 @@ def disapprove_contract(request_id, role):
 
     print("🔥 REJECT HIT", request_id, normalized_role)
 
-    request_data = get_request_by_id(request_id)
+    contract_source = _load_contract_source(request_id, proposal_id)
 
-    if not request_data:
+    if not contract_source:
         return {
             "success": False,
             "error": "Request not found"
         }
 
+    request_data = contract_source.get("data") or {}
     contract_data = request_data.get("contractData")
     if not isinstance(contract_data, dict):
         generated = generate_contract_from_data(request_data)
@@ -745,7 +932,7 @@ def disapprove_contract(request_id, role):
 
     contract_data["approval"] = approval
     contract_data["signatures"] = _empty_signatures()
-    update_request_contract_data(request_id, contract_data)
+    _save_contract_source_data(contract_source, request_id, proposal_id, contract_data)
 
     return {
         "success": True,
@@ -755,17 +942,18 @@ def disapprove_contract(request_id, role):
     }
 
 
-def cancel_contract(request_id, role=""):
+def cancel_contract(request_id, role="", proposal_id=""):
     normalized_role = (role or "").strip().lower()
 
-    request_data = get_request_by_id(request_id)
+    contract_source = _load_contract_source(request_id, proposal_id)
 
-    if not request_data:
+    if not contract_source:
         return {
             "success": False,
             "error": "Request not found"
         }
 
+    request_data = contract_source.get("data") or {}
     contract_data = request_data.get("contractData")
     if not isinstance(contract_data, dict):
         return {
@@ -808,7 +996,7 @@ def cancel_contract(request_id, role=""):
     contract_data["approval"] = approval
     contract_data["signatures"] = _empty_signatures()
 
-    update_request_contract_data(request_id, contract_data)
+    _save_contract_source_data(contract_source, request_id, proposal_id, contract_data)
 
     return {
         "success": True,
@@ -818,21 +1006,22 @@ def cancel_contract(request_id, role=""):
     }
 
 
-def request_termination(request_id, role, termination_mode=""):
+def request_termination(request_id, role, termination_mode="", proposal_id=""):
     normalized_role = (role or "").strip().lower()
     normalized_mode = (termination_mode or "").strip().lower()
 
     if normalized_role not in ("client", "freelancer"):
         raise ValueError("role must be either 'client' or 'freelancer'")
 
-    request_data = get_request_by_id(request_id)
+    contract_source = _load_contract_source(request_id, proposal_id)
 
-    if not request_data:
+    if not contract_source:
         return {
             "success": False,
             "error": "Request not found"
         }
 
+    request_data = contract_source.get("data") or {}
     contract_data = request_data.get("contractData")
     if not isinstance(contract_data, dict):
         return {
@@ -901,7 +1090,7 @@ def request_termination(request_id, role, termination_mode=""):
     )
 
     contract_data["approval"] = approval
-    update_request_contract_data(request_id, contract_data)
+    _save_contract_source_data(contract_source, request_id, proposal_id, contract_data)
 
     return {
         "success": True,
@@ -913,20 +1102,21 @@ def request_termination(request_id, role, termination_mode=""):
     }
 
 
-def approve_termination(request_id, role):
+def approve_termination(request_id, role, proposal_id=""):
     normalized_role = (role or "").strip().lower()
 
     if normalized_role not in ("client", "freelancer"):
         raise ValueError("role must be either 'client' or 'freelancer'")
 
-    request_data = get_request_by_id(request_id)
+    contract_source = _load_contract_source(request_id, proposal_id)
 
-    if not request_data:
+    if not contract_source:
         return {
             "success": False,
             "error": "Request not found"
         }
 
+    request_data = contract_source.get("data") or {}
     contract_data = request_data.get("contractData")
     if not isinstance(contract_data, dict):
         return {
@@ -972,7 +1162,7 @@ def approve_termination(request_id, role):
     approval["contractStatus"] = "terminated"
 
     contract_data["approval"] = approval
-    update_request_contract_data(request_id, contract_data)
+    _save_contract_source_data(contract_source, request_id, proposal_id, contract_data)
 
     return {
         "success": True,
@@ -982,20 +1172,21 @@ def approve_termination(request_id, role):
     }
 
 
-def reject_termination(request_id, role):
+def reject_termination(request_id, role, proposal_id=""):
     normalized_role = (role or "").strip().lower()
 
     if normalized_role not in ("client", "freelancer"):
         raise ValueError("role must be either 'client' or 'freelancer'")
 
-    request_data = get_request_by_id(request_id)
+    contract_source = _load_contract_source(request_id, proposal_id)
 
-    if not request_data:
+    if not contract_source:
         return {
             "success": False,
             "error": "Request not found"
         }
 
+    request_data = contract_source.get("data") or {}
     contract_data = request_data.get("contractData")
     if not isinstance(contract_data, dict):
         return {
@@ -1046,7 +1237,7 @@ def reject_termination(request_id, role):
     approval["contractStatus"] = "approved"
 
     contract_data["approval"] = approval
-    update_request_contract_data(request_id, contract_data)
+    _save_contract_source_data(contract_source, request_id, proposal_id, contract_data)
 
     return {
         "success": True,
@@ -1056,20 +1247,21 @@ def reject_termination(request_id, role):
     }
 
 
-def cancel_termination(request_id, role):
+def cancel_termination(request_id, role, proposal_id=""):
     normalized_role = (role or "").strip().lower()
 
     if normalized_role not in ("client", "freelancer"):
         raise ValueError("role must be either 'client' or 'freelancer'")
 
-    request_data = get_request_by_id(request_id)
+    contract_source = _load_contract_source(request_id, proposal_id)
 
-    if not request_data:
+    if not contract_source:
         return {
             "success": False,
             "error": "Request not found"
         }
 
+    request_data = contract_source.get("data") or {}
     contract_data = request_data.get("contractData")
     if not isinstance(contract_data, dict):
         return {
@@ -1106,7 +1298,7 @@ def cancel_termination(request_id, role):
     approval["contractStatus"] = "approved"
 
     contract_data["approval"] = approval
-    update_request_contract_data(request_id, contract_data)
+    _save_contract_source_data(contract_source, request_id, proposal_id, contract_data)
 
     return {
         "success": True,
@@ -1144,6 +1336,8 @@ def update_contract(request_id, contract_data, role="", proposal_id=""):
     existing_delivery = existing_contract_data.get("deliveryData")
     existing_admin_review = existing_contract_data.get("adminReview")
     existing_custom_clauses = existing_contract_data.get("customClauses")
+    existing_payment_data = existing_contract_data.get("paymentData")
+    existing_milestones = existing_contract_data.get("milestones")
 
     updated_contract_data = {
         "parties": dict(existing_parties) if isinstance(existing_parties, dict) else {},
@@ -1157,6 +1351,8 @@ def update_contract(request_id, contract_data, role="", proposal_id=""):
         "deliveryData": dict(existing_delivery) if isinstance(existing_delivery, dict) else {},
         "adminReview": dict(existing_admin_review) if isinstance(existing_admin_review, dict) else {},
         "customClauses": list(existing_custom_clauses) if isinstance(existing_custom_clauses, list) else [],
+        "paymentData": dict(existing_payment_data) if isinstance(existing_payment_data, dict) else {},
+        "milestones": list(existing_milestones) if isinstance(existing_milestones, list) else [],
     }
 
     if isinstance(contract_data.get("service"), dict):
@@ -1176,6 +1372,12 @@ def update_contract(request_id, contract_data, role="", proposal_id=""):
 
     if isinstance(contract_data.get("adminReview"), dict):
         updated_contract_data["adminReview"] = dict(contract_data["adminReview"])
+
+    if isinstance(contract_data.get("paymentData"), dict):
+        updated_contract_data["paymentData"] = dict(contract_data["paymentData"])
+
+    if isinstance(contract_data.get("milestones"), list):
+        updated_contract_data["milestones"] = contract_data["milestones"]
 
     if isinstance(contract_data.get("meta"), dict):
         updated_contract_data["meta"].update(contract_data["meta"])
@@ -1212,6 +1414,8 @@ def update_contract(request_id, contract_data, role="", proposal_id=""):
             isinstance(contract_data.get("progressData"), dict)
             or isinstance(contract_data.get("deliveryData"), dict)
             or isinstance(contract_data.get("adminReview"), dict)
+            or isinstance(contract_data.get("paymentData"), dict)
+            or isinstance(contract_data.get("milestones"), list)
         )
         and updated_contract_data["meta"] == normalized_existing_meta
         and updated_contract_data["service"] == normalized_existing_service
@@ -1283,16 +1487,34 @@ def update_contract(request_id, contract_data, role="", proposal_id=""):
     }
 
 
-def delete_contract(request_id):
-    request_data = get_request_by_id(request_id)
+def delete_contract(request_id, proposal_id=""):
+    contract_source = _load_contract_source(request_id, proposal_id)
 
-    if not request_data:
+    if not contract_source:
         return {
             "success": False,
             "error": "Request not found"
         }
 
-    delete_request_contract_data(request_id)
+    if contract_source.get("source") == "announcement":
+        normalized_proposal_id = str(
+            contract_source.get("proposalId") or proposal_id or ""
+        ).strip()
+        if not normalized_proposal_id:
+            return {
+                "success": False,
+                "error": "proposalId is required for announcement contracts"
+            }
+        delete_announcement_proposal_contract_data(normalized_proposal_id)
+
+        client_id = str(contract_source.get("clientId") or "").strip()
+        announcement_id = str(
+            contract_source.get("announcementId") or request_id or ""
+        ).strip()
+        if client_id and announcement_id:
+            delete_announcement_contract_data(client_id, announcement_id)
+    else:
+        delete_request_contract_data(request_id)
 
     return {
         "success": True

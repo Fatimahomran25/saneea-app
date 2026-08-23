@@ -1,7 +1,8 @@
-import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import '../models/freelancer_profile_model.dart';
@@ -31,8 +32,10 @@ class FreelancerProfileController extends ChangeNotifier {
   // IBAN
   final ibanCtrl = TextEditingController();
 
-  File? pickedImageFile;
-  final List<File> pickedPortfolioFiles = [];
+  // نستخدم bytes بدل dart:io File عشان يشتغل على كل المنصات (الويب
+  // مو مدعوم فيه Image.file / putFile إطلاقاً).
+  Uint8List? pickedImageFile;
+  final List<Uint8List> pickedPortfolioFiles = [];
 
   static const int bioMax = 150;
   final RegExp gmailReg = RegExp(r'^[a-zA-Z0-9._%+-]+@gmail\.com$');
@@ -113,8 +116,8 @@ class FreelancerProfileController extends ChangeNotifier {
       );
 
       // تعبئة البيانات
-      firstNameCtrl.text = profile!.firstName;
-      lastNameCtrl.text = profile!.lastName;
+      firstNameCtrl.text = capitalizeWords(profile!.firstName);
+      lastNameCtrl.text = capitalizeWords(profile!.lastName);
       emailCtrl.text = profile!.email;
       bioCtrl.text = profile!.bio;
       ibanCtrl.text = profile!.iban ?? "";
@@ -125,7 +128,7 @@ class FreelancerProfileController extends ChangeNotifier {
       isLoading = false;
       notifyListeners();
     } catch (e) {
-      error = e.toString();
+      error = friendlyError(e);
       isLoading = false;
       notifyListeners();
     }
@@ -146,8 +149,8 @@ class FreelancerProfileController extends ChangeNotifier {
     pickedImageFile = null;
     pickedPortfolioFiles.clear();
 
-    firstNameCtrl.text = profile!.firstName;
-    lastNameCtrl.text = profile!.lastName;
+    firstNameCtrl.text = capitalizeWords(profile!.firstName);
+    lastNameCtrl.text = capitalizeWords(profile!.lastName);
 
     emailCtrl.text = profile!.email;
     bioCtrl.text = profile!.bio;
@@ -156,16 +159,59 @@ class FreelancerProfileController extends ChangeNotifier {
     notifyListeners();
   }
 
+  // يحوّل أخطاء Firebase التقنية الخام (زي "quota-exceeded" أو
+  // "permission-denied") إلى رسالة مفهومة للمستخدم، بدل ما نعرض
+  // النص التقني الخام (اسم الـ bucket، روابط، أكواد داخلية...).
+  static String friendlyError(Object e) {
+    if (e is FirebaseException) {
+      switch (e.code) {
+        case 'quota-exceeded':
+          return "We're experiencing high demand right now. Please try again later.";
+        case 'unauthorized':
+        case 'permission-denied':
+          return "You don't have permission to do this.";
+        case 'unauthenticated':
+          return "Please log in again and try.";
+        case 'network-request-failed':
+        case 'unavailable':
+          return "Network error. Please check your connection and try again.";
+        case 'canceled':
+          return "Upload was canceled.";
+        default:
+          return "Something went wrong. Please try again.";
+      }
+    }
+    return "Something went wrong. Please try again.";
+  }
+
+  // يكبّر أول حرف من كل كلمة (زي "fatimah" -> "Fatimah")، نفس شكل
+  // خيارات Job Title ("Software Developers").
+  static String capitalizeWords(String value) {
+    return value
+        .split(' ')
+        .map(
+          (w) => w.isEmpty ? w : w[0].toUpperCase() + w.substring(1),
+        )
+        .join(' ');
+  }
+
   // ===== validators =====
+  // أرقام إنجليزية/عربية/فارسية ممتدة، يستخدمها فحص الاسم أدناه.
+  static final RegExp _digitsRegex = RegExp(r'[0-9٠-٩۰-۹]');
+
   String? validateFirstName(String? v) {
     final value = (v ?? '').trim();
     if (value.isEmpty) return "First name is required";
+    if (_digitsRegex.hasMatch(value)) return "Letters only";
+    if (value.length > 20) return "Max 20 characters";
     return null;
   }
 
   String? validateLastName(String? v) {
     final value = (v ?? '').trim();
     if (value.isEmpty) return "Last name is required";
+    if (_digitsRegex.hasMatch(value)) return "Letters only";
+    if (value.length > 20) return "Max 20 characters";
     return null;
   }
 
@@ -193,13 +239,13 @@ class FreelancerProfileController extends ChangeNotifier {
   }
 
   // ===== image/portfolio =====
-  void setPickedImage(File file) {
+  void setPickedImage(Uint8List bytes) {
     if (!isEditing) return;
-    pickedImageFile = file;
+    pickedImageFile = bytes;
     notifyListeners();
   }
 
-  void addPortfolioFiles(List<File> files) {
+  void addPortfolioFiles(List<Uint8List> files) {
     if (!isEditing) return;
     pickedPortfolioFiles.addAll(files);
     notifyListeners();
@@ -530,7 +576,9 @@ class FreelancerProfileController extends ChangeNotifier {
 
       if (pickedImageFile != null) {
         final ref = _storage.ref().child('users/$uid/profile.jpg');
-        await ref.putFile(
+        // putData (بدل putFile) يشتغل على كل المنصات لأنه يرفع bytes
+        // مباشرة بدون الاعتماد على نظام ملفات حقيقي (غير متوفر بالويب).
+        await ref.putData(
           pickedImageFile!,
           SettableMetadata(contentType: 'image/jpeg'),
         );
@@ -539,10 +587,10 @@ class FreelancerProfileController extends ChangeNotifier {
 
       // upload portfolio
       final List<String> uploadedPortfolioUrls = [];
-      for (final file in pickedPortfolioFiles) {
+      for (final bytes in pickedPortfolioFiles) {
         final id = DateTime.now().microsecondsSinceEpoch.toString();
         final ref = _storage.ref().child('users/$uid/portfolio/$id.jpg');
-        await ref.putFile(file, SettableMetadata(contentType: 'image/jpeg'));
+        await ref.putData(bytes, SettableMetadata(contentType: 'image/jpeg'));
         uploadedPortfolioUrls.add(await ref.getDownloadURL());
       }
 
@@ -551,9 +599,9 @@ class FreelancerProfileController extends ChangeNotifier {
         ...uploadedPortfolioUrls,
       ];
 
-      // ✅ name from 2 fields
-      final newFirst = firstNameCtrl.text.trim();
-      final newLast = lastNameCtrl.text.trim();
+      // ✅ name from 2 fields (Capital أول حرف من كل كلمة قبل الحفظ)
+      final newFirst = capitalizeWords(firstNameCtrl.text.trim());
+      final newLast = capitalizeWords(lastNameCtrl.text.trim());
 
       final newEmail = emailCtrl.text.trim();
       final newBioRaw = bioCtrl.text;
@@ -608,7 +656,7 @@ class FreelancerProfileController extends ChangeNotifier {
       notifyListeners();
       return true;
     } catch (e) {
-      error = e.toString();
+      error = friendlyError(e);
       isSaving = false;
       notifyListeners();
       return false;
@@ -616,8 +664,16 @@ class FreelancerProfileController extends ChangeNotifier {
   }
 
   Future<void> logout(BuildContext context) async {
-    final messagingController = MessagingController();
-    await messagingController.clearToken();
+    // نلف clearToken بمحاولة منفصلة: هذي خطوة تنظيف ثانوية (إشعارات)،
+    // ما نبيها توقف تسجيل الخروج الفعلي لو فشلت (زي لما يكون إذن
+    // الإشعارات ممنوع بالمتصفح ويرمي خطأ).
+    try {
+      final messagingController = MessagingController();
+      await messagingController.clearToken();
+    } catch (_) {
+      // تجاهل: فشل تنظيف الإشعارات مو سبب كافي نمنع المستخدم من
+      // تسجيل الخروج.
+    }
     await _auth.signOut();
     if (!context.mounted) return;
     Navigator.pushNamedAndRemoveUntil(context, '/login', (r) => false);

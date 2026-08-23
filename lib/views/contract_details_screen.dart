@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import '../config/api_config.dart';
 import '../controlles/contracts_controller.dart';
 import '../models/contract_model.dart';
 
@@ -22,8 +25,55 @@ class _ContractDetailsScreenState extends State<ContractDetailsScreen> {
 
   final ContractsController _controller = ContractsController();
   bool _isDeleting = false;
+  bool _isDownloading = false;
 
   GeneratedContract get contract => widget.contract;
+
+  // The final PDF is only ever available once both parties have approved
+  // (the backend enforces this too — see /download-contract-pdf), same
+  // gate the in-chat "Download Contract" button already uses.
+  bool get _canDownload =>
+      contract.clientApproved && contract.freelancerApproved;
+
+  Future<void> _downloadContract() async {
+    if (_isDownloading) return;
+    setState(() => _isDownloading = true);
+
+    try {
+      // Same as every other contract action: a contract created from an
+      // accepted announcement proposal lives under the proposal, not just
+      // the requestId, so the backend needs proposalId too or it 404s.
+      String proposalId = '';
+      final chatId = contract.chatId;
+      if (chatId != null && chatId.isNotEmpty) {
+        final chatDoc = await FirebaseFirestore.instance
+            .collection('chat')
+            .doc(chatId)
+            .get();
+        proposalId = (chatDoc.data()?['proposalId'] ?? '').toString().trim();
+      }
+
+      final normalizedBaseUrl = ApiConfig.baseUrl.endsWith('/')
+          ? ApiConfig.baseUrl.substring(0, ApiConfig.baseUrl.length - 1)
+          : ApiConfig.baseUrl;
+      final uri = Uri.parse('$normalizedBaseUrl/download-contract-pdf')
+          .replace(
+            queryParameters: {
+              'requestId': contract.requestId,
+              if (proposalId.isNotEmpty) 'proposalId': proposalId,
+            },
+          );
+
+      final opened = await launchUrl(uri);
+      if (!opened && mounted) {
+        _showSnackBar('Could not open the contract PDF.');
+      }
+    } catch (e) {
+      if (mounted) _showSnackBar('Failed to download contract.');
+    } finally {
+      if (mounted) setState(() => _isDownloading = false);
+    }
+  }
 
   Color get _statusColor {
     switch (contract.contractStatus) {
@@ -132,6 +182,27 @@ class _ContractDetailsScreenState extends State<ContractDetailsScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildSignatureItem({required String label, required bool signed}) {
+    return Row(
+      children: [
+        Icon(
+          signed ? Icons.check_circle_rounded : Icons.hourglass_top_rounded,
+          color: signed ? const Color(0xFF2E7D32) : const Color(0xFFEF6C00),
+          size: 18,
+        ),
+        const SizedBox(width: 8),
+        Text(
+          '$label: ${signed ? 'signed' : 'not signed yet'}',
+          style: const TextStyle(
+            color: Colors.black87,
+            fontSize: 13.5,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
     );
   }
 
@@ -341,6 +412,33 @@ class _ContractDetailsScreenState extends State<ContractDetailsScreen> {
                         ],
                       ),
                     ),
+                    if (_canDownload) ...[
+                      const SizedBox(height: 14),
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: _isDownloading ? null : _downloadContract,
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: _primary,
+                            side: const BorderSide(color: _primary),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          icon: _isDownloading
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.download_outlined),
+                          label: const Text('Download Contract'),
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 14),
                     _buildSection(
                       title: 'Overview',
@@ -392,6 +490,48 @@ class _ContractDetailsScreenState extends State<ContractDetailsScreen> {
                         ),
                       ],
                     ),
+                    if (contract.clientHasSignature ||
+                        contract.freelancerHasSignature) ...[
+                      const SizedBox(height: 14),
+                      _buildSection(
+                        title: 'Signatures',
+                        children: [
+                          _buildSignatureItem(
+                            label: 'Client',
+                            signed: contract.clientHasSignature,
+                          ),
+                          const SizedBox(height: 10),
+                          _buildSignatureItem(
+                            label: 'Freelancer',
+                            signed: contract.freelancerHasSignature,
+                          ),
+                          if (contract.signedAtText.isNotEmpty) ...[
+                            const SizedBox(height: 10),
+                            Text(
+                              'Signed on ${contract.signedAtText}',
+                              style: const TextStyle(
+                                color: Colors.black54,
+                                fontSize: 12.5,
+                              ),
+                            ),
+                          ],
+                          const SizedBox(height: 10),
+                          const Text(
+                            'The signature lines shown in the contract '
+                            'text below are standard document formatting. '
+                            'The actual signed signatures are recorded '
+                            'here and included as images in the '
+                            'downloaded PDF.',
+                            style: TextStyle(
+                              color: Colors.black45,
+                              fontSize: 12,
+                              height: 1.4,
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                     if (showTerminationStatus) ...[
                       const SizedBox(height: 14),
                       _buildSection(
