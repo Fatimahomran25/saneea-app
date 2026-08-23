@@ -18,7 +18,7 @@
 
 Freelance marketplaces routinely fail their users in three places: **trust** (has this freelancer actually delivered good work before?), **money** (is the client's payment safe until the work is actually done?), and **paperwork** (drafting a fair, legally-coherent contract is a barrier most individual freelancers and small clients skip entirely, leaving both sides exposed).
 
-**Saneea** was built to close those three gaps for a Saudi/Gulf freelance market:
+**Saneea** was built to close those three gaps for the Saudi freelance market:
 
 - **Trust** — every freelancer profile carries a real rating history, and a full admin moderation layer (general reports, contract disputes, warnings, and account blocking/appeals) backs up bad-actor accountability instead of leaving it to a comment section.
 - **Money** — payments are never released in one lump sum. Every contract is split into **three milestones (10% / 40% / 50%)**, each individually paid through the **Moyasar** payment gateway only after the corresponding deliverable is submitted and approved, with the payment order enforced **server-side** (not just in the UI).
