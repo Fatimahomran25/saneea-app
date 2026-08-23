@@ -9,7 +9,7 @@
 ![Firebase](https://img.shields.io/badge/Firebase-Auth%20%7C%20Firestore%20%7C%20Storage%20%7C%20FCM-FFCA28?logo=firebase&logoColor=black)
 ![OpenAI](https://img.shields.io/badge/OpenAI-GPT--5.4-412991?logo=openai&logoColor=white)
 ![Moyasar](https://img.shields.io/badge/Payments-Moyasar-5A3E9E)
-![Platforms](https://img.shields.io/badge/Platforms-Android%20%7C%20iOS%20%7C%20Web%20%7C%20Windows%20%7C%20macOS%20%7C%20Linux-informational)
+![Platform](https://img.shields.io/badge/Platform-Android-3DDC84?logo=android&logoColor=white)
 ![Status](https://img.shields.io/badge/Status-Active%20Development-yellow)
 
 ---
@@ -72,7 +72,7 @@ A dedicated admin web app surface with four sections:
 
 | Layer | Technology |
 |---|---|
-| **Frontend** | Flutter 3.x / Dart 3.10 — single codebase targeting Android, iOS, Web, Windows, macOS, and Linux |
+| **Frontend** | Flutter 3.x / Dart 3.10 — **Android is the actual target platform** (custom app icon and release config are only set up for Android in `pubspec.yaml`). The `ios/`, `web/`, `windows/`, `macos/`, and `linux/` folders are Flutter's default scaffolding from `flutter create` and are used during development (this session's testing was largely done via `flutter run -d chrome` for convenience) but are not configured or intended as shipped platforms. |
 | **State Management** | `provider`, plus per-screen `StatefulWidget` + Firestore `StreamBuilder`s for live data |
 | **Backend API** | Python 3.12 + Flask 3.1, organized as a `Blueprint` (`contract_routes`) registered onto the main Flask app (`server.py`) |
 | **Database** | Cloud Firestore (NoSQL, real-time listeners throughout) |
@@ -126,7 +126,8 @@ saneea-New/
 ├── functions/                        # Firebase Cloud Functions (Node.js)
 │   └── index.js                      # sendChatNotification, sendRequestNotification
 │
-├── android/ ios/ web/ windows/ macos/ linux/   # Flutter platform shells
+├── android/                           # Primary target platform (custom app icon configured here)
+├── ios/ web/ windows/ macos/ linux/   # Default Flutter scaffolding, used for dev/testing only
 ├── firebase.json                     # Firebase Hosting/Functions/Storage config
 ├── pubspec.yaml                      # Flutter dependencies
 └── README.md
@@ -207,14 +208,11 @@ There is currently **no automated CI/CD pipeline** configured in this repository
 
 **Manual build commands:**
 ```bash
-# Flutter Web production build
-flutter build web --release
-
-# Android release APK
+# Android release APK (primary target platform)
 flutter build apk --release
 
-# iOS release build
-flutter build ios --release
+# Flutter Web build (used for local development/testing and admin-panel access)
+flutter build web --release
 ```
 
 **Firebase Hosting deploy** (serves the `web_reset/` directory per `firebase.json`):
