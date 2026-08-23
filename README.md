@@ -72,7 +72,7 @@ A dedicated admin web app surface with four sections:
 
 | Layer | Technology |
 |---|---|
-| **Frontend** | Flutter 3.x / Dart 3.10 — **Android is the actual target platform** (custom app icon and release config are only set up for Android in `pubspec.yaml`). The `ios/`, `web/`, `windows/`, `macos/`, and `linux/` folders are Flutter's default scaffolding from `flutter create` and are used during development (this session's testing was largely done via `flutter run -d chrome` for convenience) but are not configured or intended as shipped platforms. |
+| **Frontend** | Flutter 3.x / Dart 3.10 — Android |
 | **State Management** | `provider`, plus per-screen `StatefulWidget` + Firestore `StreamBuilder`s for live data |
 | **Backend API** | Python 3.12 + Flask 3.1, organized as a `Blueprint` (`contract_routes`) registered onto the main Flask app (`server.py`) |
 | **Database** | Cloud Firestore (NoSQL, real-time listeners throughout) |
@@ -126,8 +126,7 @@ saneea-New/
 ├── functions/                        # Firebase Cloud Functions (Node.js)
 │   └── index.js                      # sendChatNotification, sendRequestNotification
 │
-├── android/                           # Primary target platform (custom app icon configured here)
-├── ios/ web/ windows/ macos/ linux/   # Default Flutter scaffolding, used for dev/testing only
+├── android/                           # Flutter platform shell
 ├── firebase.json                     # Firebase Hosting/Functions/Storage config
 ├── pubspec.yaml                      # Flutter dependencies
 └── README.md
@@ -208,11 +207,8 @@ There is currently **no automated CI/CD pipeline** configured in this repository
 
 **Manual build commands:**
 ```bash
-# Android release APK (primary target platform)
+# Android release APK
 flutter build apk --release
-
-# Flutter Web build (used for local development/testing and admin-panel access)
-flutter build web --release
 ```
 
 **Firebase Hosting deploy** (serves the `web_reset/` directory per `firebase.json`):
